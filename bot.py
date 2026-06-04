@@ -9,7 +9,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -82,6 +82,25 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu")]]
+    )
+
+
+async def booking_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
+    username = storage.get_setting("bot_username")
+    if not username:
+        me = await bot.get_me()
+        username = me.username or ""
+        if username:
+            storage.set_setting("bot_username", username)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Записаться на вклады",
+                    url=f"https://t.me/{username}?start=bookings",
+                )
+            ]
+        ]
     )
 
 
@@ -219,7 +238,12 @@ async def refresh_schedule_message(bot: Bot) -> None:
         )
         return
     try:
-        await bot.edit_message_text(bookings_text(), chat_id=chat_id, message_id=message_id)
+        await bot.edit_message_text(
+            bookings_text(),
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=await booking_link_keyboard(bot),
+        )
         logging.info("Schedule message refreshed: chat_id=%s message_id=%s", chat_id, message_id)
     except TelegramBadRequest as error:
         if "message is not modified" in str(error).lower():
@@ -237,6 +261,7 @@ async def refresh_schedule_message(bot: Bot) -> None:
                 chat_id=chat_id,
                 text=bookings_text(),
                 message_thread_id=thread_id,
+                reply_markup=await booking_link_keyboard(bot),
             )
             storage.set_setting("schedule_message_id", str(sent.message_id))
             logging.info(
@@ -273,7 +298,12 @@ async def ensure_schedule_message(bot: Bot, message: Message) -> None:
             await _delete_message_silent(bot, chat_id, message_id)
         else:
             try:
-                await bot.edit_message_text(bookings_text(), chat_id=chat_id, message_id=message_id)
+                await bot.edit_message_text(
+                    bookings_text(),
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=await booking_link_keyboard(bot),
+                )
                 await _delete_silent(message)
                 return
             except TelegramBadRequest:
@@ -283,6 +313,7 @@ async def ensure_schedule_message(bot: Bot, message: Message) -> None:
         chat_id=message.chat.id,
         text=bookings_text(),
         message_thread_id=current_thread_id,
+        reply_markup=await booking_link_keyboard(bot),
     )
     storage.set_setting("group_chat_id", str(message.chat.id))
     storage.set_setting("schedule_message_id", str(sent.message_id))
@@ -310,7 +341,7 @@ def require_registered(message: Message) -> ClubUser | None:
 
 
 @router.message(Command("start"))
-async def start(message: Message) -> None:
+async def start(message: Message, command: CommandObject) -> None:
     if message.chat.type != "private":
         return
     user = storage.get_user(message.from_user.id)
@@ -318,6 +349,12 @@ async def start(message: Message) -> None:
         await message.answer(
             "Вы не зарегистрированы в клубе.\n"
             "Отправьте ссылку на ваш профиль в MangaBuff."
+        )
+        return
+    if command.args == "bookings":
+        await message.answer(
+            bookings_text(),
+            reply_markup=bookings_keyboard(message.from_user.id),
         )
         return
     await send_main_menu(message)
@@ -399,7 +436,10 @@ async def chat_schedule(message: Message) -> None:
     if message.chat.type == "private":
         return
     remember_chat_user(message)
-    await message.answer(bookings_text())
+    await message.answer(
+        bookings_text(),
+        reply_markup=await booking_link_keyboard(message.bot),
+    )
 
 
 @router.message(F.text.startswith(".всем"))
