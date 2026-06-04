@@ -14,6 +14,7 @@ class Config:
     club_slug: str
     timezone: ZoneInfo
     db_path: str
+    database_url: str | None
     menu_text: str
     menu_photo_path: str | None
     guide_text: str
@@ -40,6 +41,7 @@ def load_config() -> Config:
         club_slug=os.getenv("CLUB_SLUG", "fu-razvrat"),
         timezone=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         db_path=os.getenv("DB_PATH", "bot.db"),
+        database_url=os.getenv("DATABASE_URL") or None,
         menu_text=os.getenv("MENU_TEXT", "Главное меню клуба."),
         menu_photo_path=os.getenv("MENU_PHOTO_PATH") or None,
         guide_text=os.getenv(

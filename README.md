@@ -19,6 +19,12 @@ pip install -r requirements.txt
 python bot.py
 ```
 
+## Railway и PostgreSQL
+
+На Railway подключите PostgreSQL к сервису с ботом. Railway автоматически добавит переменную `DATABASE_URL`; бот увидит ее и будет хранить пользователей, брони, настройки табло и базу участников чата в PostgreSQL.
+
+Для локального запуска без `DATABASE_URL` бот использует SQLite-файл из `DB_PATH`.
+
 ## Как работает регистрация
 
 При первом `/start` бот просит ссылку вида:

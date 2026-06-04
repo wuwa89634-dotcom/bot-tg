@@ -459,7 +459,7 @@ async def on_book_slot(call: CallbackQuery, bot: Bot) -> None:
 async def main() -> None:
     global config, storage
     config = load_config()
-    storage = Storage(config.db_path)
+    storage = Storage(config.database_url or config.db_path)
     storage.init()
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
