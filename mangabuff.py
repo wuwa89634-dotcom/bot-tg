@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from http import HTTPStatus
+from typing import Any
 from urllib.parse import urljoin
 
 import requests
@@ -13,6 +14,10 @@ from bs4 import BeautifulSoup
 PROFILE_RE = re.compile(r"^https?://(?:www\.)?mangabuff\.ru/users/(\d+)(?:[/?#].*)?$")
 _SESSION: requests.Session | None = None
 _LOGIN_DONE = False
+
+
+class MangaBuffLoginError(requests.RequestException):
+    pass
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,13 @@ def check_profile_in_club(
 
     try:
         club_response = _get(club_url)
+    except MangaBuffLoginError as exc:
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="login_failed",
+            detail=str(exc),
+        )
     except requests.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else None
         if status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
@@ -166,6 +178,13 @@ def check_profile_page_for_club(profile_url: str, club_slug: str) -> ProfileChec
 
     try:
         response = _get(profile_url)
+    except MangaBuffLoginError as exc:
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="login_failed",
+            detail=str(exc),
+        )
     except requests.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else None
         if status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
@@ -269,11 +288,15 @@ def _login(session: requests.Session) -> None:
     login_page.raise_for_status()
 
     soup = BeautifulSoup(login_page.text, "html.parser")
+    form = soup.select_one("form")
+    action = form.get("action") if form else None
+    post_url = urljoin(login_url, action) if action else login_url
     csrf = _extract_csrf_token(soup)
-    payload = {
-        login_field: email,
-        password_field: password,
-    }
+    payload = _form_payload(form)
+    payload[login_field] = email
+    payload[password_field] = password
+    for fallback_login_field in ("email", "login", "username", "name"):
+        payload.setdefault(fallback_login_field, email)
     if csrf:
         payload["_token"] = csrf
 
@@ -282,13 +305,39 @@ def _login(session: requests.Session) -> None:
         headers["X-CSRF-TOKEN"] = csrf
 
     response = session.post(
-        login_url,
+        post_url,
         data=payload,
         headers=headers,
         timeout=15,
         allow_redirects=True,
     )
     response.raise_for_status()
+    if not _page_indicates_auth(response.text, response.url):
+        raise MangaBuffLoginError(
+            f"login_failed url={response.url} status={response.status_code} bytes={len(response.text)}"
+        )
+
+
+def _form_payload(form: Any) -> dict[str, str]:
+    if not form:
+        return {}
+
+    payload: dict[str, str] = {}
+    for input_tag in form.select("input[name]"):
+        name = input_tag.get("name")
+        value = input_tag.get("value", "")
+        input_type = (input_tag.get("type") or "").lower()
+        if name and input_type not in {"submit", "button", "image", "file"}:
+            payload[name] = value
+    return payload
+
+
+def _page_indicates_auth(html: str, url: str) -> bool:
+    if re.search(r"window\.isAuth\s*=\s*1", html):
+        return True
+    if "/login" not in url and not re.search(r'name=["\']password["\']', html, re.I):
+        return True
+    return False
 
 
 def _extract_csrf_token(soup: BeautifulSoup) -> str | None:

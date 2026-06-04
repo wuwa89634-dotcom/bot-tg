@@ -54,6 +54,8 @@ https://mangabuff.ru/users/854887
 
 Для автоматического входа по умолчанию используется `MANGABUFF_LOGIN_URL=https://mangabuff.ru/login`, поле логина `email`, поле пароля `password`. Если форма MangaBuff использует другие имена полей, их можно переопределить через `MANGABUFF_LOGIN_FIELD` и `MANGABUFF_PASSWORD_FIELD`.
 
+Если в Railway logs появилась причина `login_failed`, попробуйте заменить `MANGABUFF_LOGIN_FIELD` на `login` или `username`.
+
 Если регистрация не проходит из-за доступа к MangaBuff, откройте Railway logs и найдите строку `MangaBuff profile check failed`: там будет причина (`auth_required`, `club_not_found`, `members_unavailable`, `network`) и технические детали.
 
 ## Расписание в чате
