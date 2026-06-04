@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
@@ -252,12 +253,19 @@ def _get_session() -> requests.Session:
 
     cookie = os.getenv("MANGABUFF_COOKIE")
     if cookie:
+        logging.info("MangaBuff auth mode: cookie")
         _SESSION.headers["Cookie"] = cookie
         return _SESSION
 
     if not _LOGIN_DONE and os.getenv("MANGABUFF_EMAIL") and os.getenv("MANGABUFF_PASSWORD"):
-        _login(_SESSION)
+        logging.info("MangaBuff auth mode: account login")
+        try:
+            _login(_SESSION)
+        except requests.RequestException as exc:
+            raise MangaBuffLoginError(f"{type(exc).__name__}: {exc}") from exc
         _LOGIN_DONE = True
+    elif not _LOGIN_DONE:
+        logging.info("MangaBuff auth mode: anonymous")
 
     return _SESSION
 
