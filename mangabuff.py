@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from http import HTTPStatus
 from urllib.parse import urljoin
 
 import requests
@@ -18,6 +19,7 @@ class ProfileCheck:
     profile_id: int | None = None
     display_name: str | None = None
     reason: str | None = None
+    detail: str | None = None
 
 
 def parse_profile_url(text: str) -> int | None:
@@ -47,12 +49,44 @@ def check_profile_in_club(
 
     try:
         club_response = _get(club_url)
-    except requests.RequestException:
-        return ProfileCheck(ok=False, profile_id=profile_id, reason="network")
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+            return ProfileCheck(
+                ok=False,
+                profile_id=profile_id,
+                reason="auth_required",
+                detail=f"club_url={club_url} status={status_code}",
+            )
+        if status_code == HTTPStatus.NOT_FOUND:
+            return ProfileCheck(
+                ok=False,
+                profile_id=profile_id,
+                reason="club_not_found",
+                detail=f"club_url={club_url} status={status_code}",
+            )
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="network",
+            detail=f"club_url={club_url} status={status_code}",
+        )
+    except requests.RequestException as exc:
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="network",
+            detail=f"club_url={club_url} error={type(exc).__name__}: {exc}",
+        )
 
     members = parse_club_members(club_response.text, club_url)
     if not members:
-        return ProfileCheck(ok=False, profile_id=profile_id, reason="members_unavailable")
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="members_unavailable",
+            detail=f"club_url={club_url} status={club_response.status_code} bytes={len(club_response.text)}",
+        )
 
     for member in members:
         if member.profile_id == profile_id:
@@ -106,7 +140,10 @@ def _get(url: str) -> requests.Response:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
             ),
-        )
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://mangabuff.ru/",
     }
     cookie = os.getenv("MANGABUFF_COOKIE")
     if cookie:

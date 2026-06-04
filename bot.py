@@ -364,8 +364,22 @@ async def register_profile(message: Message) -> None:
     await message.answer("Проверяю профиль и участие в клубе...")
     check = check_profile_in_club(profile_url, config.club_slug, config.club_url)
     if not check.ok:
+        logging.warning("MangaBuff profile check failed: reason=%s detail=%s", check.reason, check.detail)
         if check.reason == "network":
-            await message.answer("Не удалось открыть профиль. Попробуйте отправить ссылку еще раз.")
+            await message.answer(
+                "Не удалось открыть страницу клуба MangaBuff.\n"
+                "Попробуйте ещё раз позже. Если ошибка повторится, проверьте логи Railway."
+            )
+        elif check.reason == "auth_required":
+            await message.answer(
+                "MangaBuff не дал открыть список участников клуба без авторизации.\n"
+                "Добавьте MANGABUFF_COOKIE в Railway Variables."
+            )
+        elif check.reason == "club_not_found":
+            await message.answer(
+                "Не найдена страница клуба MangaBuff.\n"
+                "Проверьте переменную CLUB_URL в Railway."
+            )
         elif check.reason == "members_unavailable":
             await message.answer(
                 "Не удалось прочитать список участников клуба.\n"

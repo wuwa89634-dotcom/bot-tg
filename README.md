@@ -49,6 +49,8 @@ https://mangabuff.ru/users/854887
 
 Если MangaBuff не показывает список участников без входа в аккаунт, добавьте в Railway переменную `MANGABUFF_COOKIE` со значением cookie авторизованной сессии MangaBuff. Тогда запросы к `CLUB_URL` будут идти с этим cookie.
 
+Если регистрация не проходит из-за доступа к MangaBuff, откройте Railway logs и найдите строку `MangaBuff profile check failed`: там будет причина (`auth_required`, `club_not_found`, `members_unavailable`, `network`) и технические детали.
+
 ## Расписание в чате
 
 Если бот добавлен в чат клуба:
