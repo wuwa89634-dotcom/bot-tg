@@ -288,7 +288,7 @@ def _login(session: requests.Session) -> None:
     login_page.raise_for_status()
 
     soup = BeautifulSoup(login_page.text, "html.parser")
-    form = soup.select_one("form")
+    form = soup.select_one("form") or soup.select_one(".auth .form")
     action = form.get("action") if form else None
     post_url = urljoin(login_url, action) if action else login_url
     csrf = _extract_csrf_token(soup)
@@ -300,7 +300,11 @@ def _login(session: requests.Session) -> None:
     if csrf:
         payload["_token"] = csrf
 
-    headers = {"Referer": login_url}
+    headers = {
+        "Referer": login_url,
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+    }
     if csrf:
         headers["X-CSRF-TOKEN"] = csrf
 
@@ -312,9 +316,12 @@ def _login(session: requests.Session) -> None:
         allow_redirects=True,
     )
     response.raise_for_status()
-    if not _page_indicates_auth(response.text, response.url):
+    home = session.get("https://mangabuff.ru/", timeout=15)
+    home.raise_for_status()
+    if not _page_indicates_auth(home.text, home.url):
         raise MangaBuffLoginError(
-            f"login_failed url={response.url} status={response.status_code} bytes={len(response.text)}"
+            f"login_failed post_url={post_url} post_status={response.status_code} "
+            f"home_url={home.url} home_status={home.status_code} home_bytes={len(home.text)}"
         )
 
 
