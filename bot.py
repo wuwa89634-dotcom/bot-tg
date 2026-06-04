@@ -211,10 +211,27 @@ async def send_bookings(message: Message, telegram_id: int) -> None:
 async def refresh_schedule_message(bot: Bot) -> None:
     chat_id, message_id, thread_id = schedule_target()
     if not chat_id or not message_id:
+        logging.info(
+            "Schedule refresh skipped: chat_id=%s message_id=%s thread_id=%s",
+            chat_id,
+            message_id,
+            thread_id,
+        )
         return
     try:
         await bot.edit_message_text(bookings_text(), chat_id=chat_id, message_id=message_id)
-    except TelegramBadRequest:
+        logging.info("Schedule message refreshed: chat_id=%s message_id=%s", chat_id, message_id)
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error).lower():
+            logging.info("Schedule message unchanged: chat_id=%s message_id=%s", chat_id, message_id)
+            return
+        logging.warning(
+            "Schedule edit failed, sending a replacement: chat_id=%s message_id=%s thread_id=%s error=%s",
+            chat_id,
+            message_id,
+            thread_id,
+            error,
+        )
         try:
             sent = await bot.send_message(
                 chat_id=chat_id,
@@ -222,6 +239,12 @@ async def refresh_schedule_message(bot: Bot) -> None:
                 message_thread_id=thread_id,
             )
             storage.set_setting("schedule_message_id", str(sent.message_id))
+            logging.info(
+                "Replacement schedule message sent: chat_id=%s message_id=%s thread_id=%s",
+                chat_id,
+                sent.message_id,
+                thread_id,
+            )
         except Exception:
             storage.set_setting("schedule_message_id", "")
             logging.exception("Schedule message is unavailable")
@@ -236,9 +259,9 @@ def _setting_int(key: str) -> int | None:
 
 def schedule_target() -> tuple[int | None, int | None, int | None]:
     return (
-        config.group_chat_id or _setting_int("group_chat_id"),
-        config.schedule_message_id or _setting_int("schedule_message_id"),
-        config.schedule_thread_id or _setting_int("schedule_thread_id"),
+        _setting_int("group_chat_id") or config.group_chat_id,
+        _setting_int("schedule_message_id") or config.schedule_message_id,
+        _setting_int("schedule_thread_id") or config.schedule_thread_id,
     )
 
 
@@ -307,6 +330,16 @@ async def post_schedule(message: Message) -> None:
         return
     remember_chat_user(message)
     await ensure_schedule_message(message.bot, message)
+
+
+@router.message(Command("refresh_schedule"))
+async def force_refresh_schedule(message: Message) -> None:
+    if message.chat.type == "private":
+        await message.answer("Эту команду нужно отправить в чате клуба.")
+        return
+    remember_chat_user(message)
+    await refresh_schedule_message(message.bot)
+    await _delete_silent(message)
 
 
 @router.message(F.new_chat_members)
