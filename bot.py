@@ -85,11 +85,21 @@ def back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def menu_photo_path() -> Path | None:
+    if not config.menu_photo_path:
+        return None
+    path = Path(config.menu_photo_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent / path
+    return path if path.exists() else None
+
+
 async def send_main_menu(message: Message) -> None:
     markup = main_menu_keyboard()
-    if config.menu_photo_path and Path(config.menu_photo_path).exists():
+    photo_path = menu_photo_path()
+    if photo_path:
         await message.answer_photo(
-            photo=FSInputFile(config.menu_photo_path),
+            photo=FSInputFile(photo_path),
             caption=config.menu_text,
             reply_markup=markup,
         )
@@ -99,8 +109,49 @@ async def send_main_menu(message: Message) -> None:
 
 async def edit_or_send_menu(call: CallbackQuery) -> None:
     if call.message:
-        await call.message.answer(config.menu_text, reply_markup=main_menu_keyboard())
+        await replace_with_menu(call.message)
     await call.answer()
+
+
+async def replace_with_menu(message: Message) -> None:
+    markup = main_menu_keyboard()
+    photo_path = menu_photo_path()
+    if not photo_path:
+        await replace_with_text(message, config.menu_text, reply_markup=markup)
+        return
+
+    if message.photo:
+        try:
+            await message.edit_caption(caption=config.menu_text, reply_markup=markup)
+            return
+        except TelegramBadRequest as error:
+            if "message is not modified" in str(error).lower():
+                return
+
+    await _delete_silent(message)
+    await message.answer_photo(
+        photo=FSInputFile(photo_path),
+        caption=config.menu_text,
+        reply_markup=markup,
+    )
+
+
+async def replace_with_text(
+    message: Message,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    if not message.photo:
+        try:
+            await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return
+        except TelegramBadRequest as error:
+            if "message is not modified" in str(error).lower():
+                return
+
+    await _delete_silent(message)
+    await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
 def bookings_text() -> str:
@@ -152,7 +203,11 @@ def bookings_keyboard(current_user_id: int) -> InlineKeyboardMarkup:
 
 
 async def send_bookings(message: Message, telegram_id: int) -> None:
-    await message.answer(bookings_text(), reply_markup=bookings_keyboard(telegram_id))
+    await replace_with_text(
+        message,
+        bookings_text(),
+        reply_markup=bookings_keyboard(telegram_id),
+    )
 
 
 async def refresh_schedule_message(bot: Bot) -> None:
@@ -414,7 +469,7 @@ async def on_menu(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "guide")
 async def on_guide(call: CallbackQuery) -> None:
-    await call.message.answer(config.guide_text, reply_markup=back_keyboard())
+    await replace_with_text(call.message, config.guide_text, reply_markup=back_keyboard())
     await call.answer()
 
 
@@ -429,7 +484,12 @@ async def on_users(call: CallbackQuery) -> None:
             username = f"@{user.username}" if user.username else f"id{user.telegram_id}"
             rows.append(f"{index}. {html.escape(username)} - {html.escape(user.display_name)}")
         text = "\n".join(rows)
-    await call.message.answer(text, reply_markup=back_keyboard(), parse_mode=ParseMode.HTML)
+    await replace_with_text(
+        call.message,
+        text,
+        reply_markup=back_keyboard(),
+        parse_mode=ParseMode.HTML,
+    )
     await call.answer()
 
 
@@ -473,7 +533,8 @@ async def on_book_slot(call: CallbackQuery, bot: Bot) -> None:
             return
         await call.answer("Вы успешно записаны.")
 
-    await call.message.edit_text(
+    await replace_with_text(
+        call.message,
         bookings_text(),
         reply_markup=bookings_keyboard(call.from_user.id),
     )

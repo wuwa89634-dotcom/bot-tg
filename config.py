@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
@@ -52,6 +53,11 @@ def load_config() -> Config:
         raise RuntimeError("Set BOT_TOKEN in .env")
 
     club_url = os.getenv("CLUB_URL", "https://mangabuff.ru/clubs/fu-razvrat").strip()
+    default_menu_text = "Главное меню клуба."
+    placeholder_menu_text = "Текст главного меню. Его можно заменить в .env."
+    menu_text = os.getenv("MENU_TEXT") or default_menu_text
+    if menu_text.strip() == placeholder_menu_text:
+        menu_text = default_menu_text
 
     return Config(
         bot_token=token,
@@ -61,8 +67,8 @@ def load_config() -> Config:
         timezone=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         db_path=os.getenv("DB_PATH", "bot.db"),
         database_url=os.getenv("DATABASE_URL") or None,
-        menu_text=os.getenv("MENU_TEXT", "Главное меню клуба."),
-        menu_photo_path=os.getenv("MENU_PHOTO_PATH") or None,
+        menu_text=menu_text,
+        menu_photo_path=os.getenv("MENU_PHOTO_PATH") or str(Path("assets") / "menu.jpg"),
         guide_text=os.getenv(
             "GUIDE_TEXT",
             "Нажмите «Запись на вклады» и выберите свободное время на сегодня или завтра.",
