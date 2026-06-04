@@ -250,6 +250,12 @@ def _get_session() -> requests.Session:
     if _SESSION is None:
         _SESSION = requests.Session()
         _SESSION.headers.update(_default_headers())
+        proxy_url = os.getenv("MANGABUFF_PROXY_URL")
+        if proxy_url:
+            logging.info("MangaBuff proxy mode: enabled")
+            _SESSION.proxies.update({"http": proxy_url, "https": proxy_url})
+        else:
+            logging.info("MangaBuff proxy mode: disabled")
 
     cookie = os.getenv("MANGABUFF_COOKIE")
     if cookie:

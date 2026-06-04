@@ -56,6 +56,8 @@ https://mangabuff.ru/users/854887
 
 Если в Railway logs появилась причина `login_failed`, попробуйте заменить `MANGABUFF_LOGIN_FIELD` на `login` или `username`.
 
+Если MangaBuff возвращает `403` уже на `https://mangabuff.ru/login`, значит сайт блокирует запросы с Railway до авторизации. В этом случае можно задать `MANGABUFF_PROXY_URL`, чтобы запросы к MangaBuff шли через другой адрес, или перенести бота на сервер, который MangaBuff не блокирует.
+
 Если регистрация не проходит из-за доступа к MangaBuff, откройте Railway logs и найдите строку `MangaBuff profile check failed`: там будет причина (`auth_required`, `club_not_found`, `members_unavailable`, `network`) и технические детали.
 
 ## Расписание в чате
