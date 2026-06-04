@@ -13,6 +13,8 @@ pip install -r requirements.txt
 ```
 
 4. Скопируйте `.env.example` в `.env` и заполните `BOT_TOKEN`.
+   Для Railway укажите `CLUB_URL` ссылкой на нужный клуб, например `https://mangabuff.ru/clubs/fu-razvrat`.
+   `ADMIN_IDS` заполняется Telegram ID админов через запятую; админ-функции будут добавлены позже.
 5. Запустите:
 
 ```bash
