@@ -96,31 +96,42 @@ def check_profile_in_club(
             detail=f"club_url={club_url} error={type(exc).__name__}: {exc}",
         )
     else:
-        members = parse_club_members(club_response.text, club_url)
-        if not members:
+        if _response_requires_auth(club_response):
             club_check_error = ProfileCheck(
                 ok=False,
                 profile_id=profile_id,
-                reason="members_unavailable",
-                detail=f"club_url={club_url} status={club_response.status_code} bytes={len(club_response.text)}",
+                reason="auth_required",
+                detail=(
+                    f"club_url={club_url} final_url={club_response.url} "
+                    f"status={club_response.status_code} bytes={len(club_response.text)}"
+                ),
             )
         else:
-            for member in members:
-                if member.profile_id == profile_id:
-                    return ProfileCheck(
-                        ok=True,
-                        profile_id=profile_id,
-                        display_name=member.display_name,
-                        reason="club_members",
-                    )
+            members = parse_club_members(club_response.text, club_url)
+            if not members:
+                club_check_error = ProfileCheck(
+                    ok=False,
+                    profile_id=profile_id,
+                    reason="members_unavailable",
+                    detail=f"club_url={club_url} status={club_response.status_code} bytes={len(club_response.text)}",
+                )
+            else:
+                for member in members:
+                    if member.profile_id == profile_id:
+                        return ProfileCheck(
+                            ok=True,
+                            profile_id=profile_id,
+                            display_name=member.display_name,
+                            reason="club_members",
+                        )
 
-            display_name = _try_profile_display_name(profile_url) or f"MangaBuff #{profile_id}"
-            return ProfileCheck(
-                ok=False,
-                profile_id=profile_id,
-                display_name=display_name,
-                reason="not_in_club",
-            )
+                display_name = _try_profile_display_name(profile_url) or f"MangaBuff #{profile_id}"
+                return ProfileCheck(
+                    ok=False,
+                    profile_id=profile_id,
+                    display_name=display_name,
+                    reason="not_in_club",
+                )
 
     profile_check = check_profile_page_for_club(profile_url, club_slug)
     if profile_check.ok:
@@ -218,6 +229,14 @@ def check_profile_page_for_club(profile_url: str, club_slug: str) -> ProfileChec
 
     soup = BeautifulSoup(response.text, "html.parser")
     display_name = _extract_display_name(soup) or f"MangaBuff #{profile_id}"
+    if _response_requires_auth(response):
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            display_name=display_name,
+            reason="profile_auth_required",
+            detail=f"profile_url={profile_url} final_url={response.url} status={response.status_code}",
+        )
     if _html_contains_club(response.text, club_slug):
         return ProfileCheck(
             ok=True,
@@ -358,6 +377,17 @@ def _page_indicates_auth(html: str, url: str) -> bool:
         return True
     if "/login" not in url and not re.search(r'name=["\']password["\']', html, re.I):
         return True
+    return False
+
+
+def _response_requires_auth(response: requests.Response) -> bool:
+    if "/login" in response.url:
+        return True
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    if soup.select_one("input[type='password'], input[name='password']"):
+        return True
+
     return False
 
 
