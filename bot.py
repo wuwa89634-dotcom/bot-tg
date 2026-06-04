@@ -172,8 +172,6 @@ def bookings_text() -> str:
             parts.append("- свободно")
         parts.append("")
 
-    parts.append("Активные блокировки:")
-    parts.append("- нет")
     return "\n".join(parts).strip()
 
 
