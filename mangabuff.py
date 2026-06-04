@@ -113,6 +113,13 @@ def check_profile_in_club(
     if profile_check.ok:
         return profile_check
 
+    if profile_check.reason in {"profile_auth_required", "profile_not_found"} and club_check_error:
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason=club_check_error.reason,
+            detail=f"{club_check_error.detail}; fallback_{profile_check.reason}={profile_check.detail}",
+        )
     if profile_check.reason == "profile_network":
         return profile_check
     if club_check_error:
@@ -159,6 +166,28 @@ def check_profile_page_for_club(profile_url: str, club_slug: str) -> ProfileChec
 
     try:
         response = _get(profile_url)
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+            return ProfileCheck(
+                ok=False,
+                profile_id=profile_id,
+                reason="profile_auth_required",
+                detail=f"profile_url={profile_url} status={status_code}",
+            )
+        if status_code == HTTPStatus.NOT_FOUND:
+            return ProfileCheck(
+                ok=False,
+                profile_id=profile_id,
+                reason="profile_not_found",
+                detail=f"profile_url={profile_url} status={status_code}",
+            )
+        return ProfileCheck(
+            ok=False,
+            profile_id=profile_id,
+            reason="profile_network",
+            detail=f"profile_url={profile_url} status={status_code}",
+        )
     except requests.RequestException as exc:
         return ProfileCheck(
             ok=False,
