@@ -373,7 +373,7 @@ async def register_profile(message: Message) -> None:
         elif check.reason == "auth_required":
             await message.answer(
                 "MangaBuff не дал открыть список участников клуба без авторизации.\n"
-                "Добавьте MANGABUFF_COOKIE в Railway Variables."
+                "Добавьте MANGABUFF_COOKIE или MANGABUFF_EMAIL/MANGABUFF_PASSWORD в Railway Variables."
             )
         elif check.reason == "club_not_found":
             await message.answer(

@@ -47,7 +47,12 @@ https://mangabuff.ru/users/854887
 
 Проверка клуба находится в `mangabuff.py`. По присланному HTML участники читаются из ссылок вида `/users/854887` внутри `.club__member-name`.
 
-Если MangaBuff не показывает список участников без входа в аккаунт, добавьте в Railway переменную `MANGABUFF_COOKIE` со значением cookie авторизованной сессии MangaBuff. Тогда запросы к `CLUB_URL` будут идти с этим cookie.
+Если MangaBuff не показывает список участников без входа в аккаунт, есть два варианта:
+
+- добавить `MANGABUFF_COOKIE` со значением cookie авторизованной сессии MangaBuff;
+- или добавить `MANGABUFF_EMAIL` и `MANGABUFF_PASSWORD`, чтобы бот сам входил в аккаунт MangaBuff.
+
+Для автоматического входа по умолчанию используется `MANGABUFF_LOGIN_URL=https://mangabuff.ru/login`, поле логина `email`, поле пароля `password`. Если форма MangaBuff использует другие имена полей, их можно переопределить через `MANGABUFF_LOGIN_FIELD` и `MANGABUFF_PASSWORD_FIELD`.
 
 Если регистрация не проходит из-за доступа к MangaBuff, откройте Railway logs и найдите строку `MangaBuff profile check failed`: там будет причина (`auth_required`, `club_not_found`, `members_unavailable`, `network`) и технические детали.
 
