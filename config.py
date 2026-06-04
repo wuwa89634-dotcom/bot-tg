@@ -53,11 +53,16 @@ def load_config() -> Config:
         raise RuntimeError("Set BOT_TOKEN in .env")
 
     club_url = os.getenv("CLUB_URL", "https://mangabuff.ru/clubs/fu-razvrat").strip()
-    default_menu_text = "Главное меню клуба."
+    default_menu_text = (
+        "[ Гений, миллиардер и просто красивый мужчина: @reeigans]\n\n"
+        "Вас приветствует бот клуба \"Keepers of Oneiroi\" Он создан для вашего "
+        "удобства и слаженной работы над клубом."
+    )
     placeholder_menu_text = "Текст главного меню. Его можно заменить в .env."
     menu_text = os.getenv("MENU_TEXT") or default_menu_text
     if menu_text.strip() == placeholder_menu_text:
         menu_text = default_menu_text
+    menu_text = menu_text.replace("\\n", "\n")
 
     return Config(
         bot_token=token,
