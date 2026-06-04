@@ -366,6 +366,11 @@ async def register_profile(message: Message) -> None:
     if not check.ok:
         if check.reason == "network":
             await message.answer("Не удалось открыть профиль. Попробуйте отправить ссылку еще раз.")
+        elif check.reason == "members_unavailable":
+            await message.answer(
+                "Не удалось прочитать список участников клуба.\n"
+                "Проверьте доступ к странице клуба или добавьте MANGABUFF_COOKIE в Railway."
+            )
         else:
             await message.answer(
                 "Вы не состоите в клубе.\n"

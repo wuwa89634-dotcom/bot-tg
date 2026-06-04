@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from urllib.parse import urljoin
@@ -45,22 +46,23 @@ def check_profile_in_club(
     club_url = club_url or f"https://mangabuff.ru/clubs/{club_slug}"
 
     try:
-        profile_response = _get(profile_url)
         club_response = _get(club_url)
     except requests.RequestException:
         return ProfileCheck(ok=False, profile_id=profile_id, reason="network")
 
-    soup = BeautifulSoup(profile_response.text, "html.parser")
-    display_name = _extract_display_name(soup) or f"MangaBuff #{profile_id}"
-
     members = parse_club_members(club_response.text, club_url)
+    if not members:
+        return ProfileCheck(ok=False, profile_id=profile_id, reason="members_unavailable")
+
     for member in members:
         if member.profile_id == profile_id:
             return ProfileCheck(
                 ok=True,
                 profile_id=profile_id,
-                display_name=member.display_name or display_name,
+                display_name=member.display_name,
             )
+
+    display_name = _try_profile_display_name(profile_url) or f"MangaBuff #{profile_id}"
 
     return ProfileCheck(
         ok=False,
@@ -97,18 +99,35 @@ def parse_club_members(html: str, base_url: str = "https://mangabuff.ru") -> lis
 
 
 def _get(url: str) -> requests.Response:
-    response = requests.get(
-        url,
-        headers={
-            "User-Agent": (
+    headers = {
+        "User-Agent": os.getenv(
+            "MANGABUFF_USER_AGENT",
+            (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
-            )
-        },
+            ),
+        )
+    }
+    cookie = os.getenv("MANGABUFF_COOKIE")
+    if cookie:
+        headers["Cookie"] = cookie
+
+    response = requests.get(
+        url,
+        headers=headers,
         timeout=15,
     )
     response.raise_for_status()
     return response
+
+
+def _try_profile_display_name(profile_url: str) -> str | None:
+    try:
+        response = _get(profile_url)
+    except requests.RequestException:
+        return None
+    soup = BeautifulSoup(response.text, "html.parser")
+    return _extract_display_name(soup)
 
 
 def _extract_display_name(soup: BeautifulSoup) -> str | None:
