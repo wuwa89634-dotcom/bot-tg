@@ -13,6 +13,7 @@ class Config:
     bot_token: str
     club_url: str
     club_slug: str
+    chat_url: str | None
     timezone: ZoneInfo
     db_path: str
     database_url: str | None
@@ -56,6 +57,7 @@ def load_config() -> Config:
         bot_token=token,
         club_url=club_url,
         club_slug=os.getenv("CLUB_SLUG") or _club_slug_from_url(club_url),
+        chat_url=os.getenv("CHAT_URL") or None,
         timezone=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         db_path=os.getenv("DB_PATH", "bot.db"),
         database_url=os.getenv("DATABASE_URL") or None,
