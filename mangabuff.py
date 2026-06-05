@@ -7,7 +7,7 @@ import hashlib
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -351,6 +351,7 @@ def _login(session: requests.Session) -> None:
 
     headers = {
         "Referer": login_url,
+        "Origin": _url_origin(login_url),
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
@@ -385,6 +386,9 @@ def _login(session: requests.Session) -> None:
             error_message or "MangaBuff rejected the account credentials"
         )
     response.raise_for_status()
+    home_url = urljoin(login_url, "/")
+    home = session.get(home_url, timeout=15)
+    home.raise_for_status()
     validation_url = os.getenv("CLUB_URL", "https://mangabuff.ru/")
     validation = session.get(validation_url, timeout=15)
     validation.raise_for_status()
@@ -392,6 +396,7 @@ def _login(session: requests.Session) -> None:
         raise MangaBuffLoginError(
             f"login_failed post_url={post_url} post_status={response.status_code} "
             f"post_response={response_summary} session_cookie_changed={session_changed} "
+            f"home_url={home.url} home_status={home.status_code} "
             f"validation_url={validation.url} validation_status={validation.status_code} "
             f"validation_bytes={len(validation.text)}"
         )
@@ -444,6 +449,9 @@ def _login_response_summary(response: requests.Response) -> str:
         data = None
     if isinstance(data, dict):
         parts.append(f"json_keys={','.join(sorted(str(key) for key in data)) or 'none'}")
+        status = data.get("status")
+        if isinstance(status, (str, int, float, bool)) or status is None:
+            parts.append(f"json_status={status!r}")
         message = data.get("message")
         if isinstance(message, str) and message:
             parts.append(f"message={message[:200]}")
@@ -453,6 +461,11 @@ def _login_response_summary(response: requests.Response) -> str:
         if title:
             parts.append(f"title={title[:100]}")
     return " ".join(parts)
+
+
+def _url_origin(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _response_requires_auth(response: requests.Response) -> bool:
