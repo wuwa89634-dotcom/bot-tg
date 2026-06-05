@@ -328,7 +328,7 @@ def _default_headers() -> dict[str, str]:
 
 def _login(session: requests.Session) -> None:
     login_url = os.getenv("MANGABUFF_LOGIN_URL", "https://mangabuff.ru/login")
-    email = os.environ["MANGABUFF_EMAIL"]
+    email = os.environ["MANGABUFF_EMAIL"].strip()
     password = os.environ["MANGABUFF_PASSWORD"]
     login_field = os.getenv("MANGABUFF_LOGIN_FIELD", "email")
     password_field = os.getenv("MANGABUFF_PASSWORD_FIELD", "password")
@@ -363,6 +363,14 @@ def _login(session: requests.Session) -> None:
         timeout=15,
         allow_redirects=True,
     )
+    if response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
+        try:
+            error_message = response.json().get("message")
+        except (ValueError, AttributeError):
+            error_message = None
+        raise MangaBuffLoginError(
+            error_message or "MangaBuff rejected the account credentials"
+        )
     response.raise_for_status()
     validation_url = os.getenv("CLUB_URL", "https://mangabuff.ru/")
     validation = session.get(validation_url, timeout=15)

@@ -1215,7 +1215,7 @@ async def register_profile(message: Message) -> None:
         elif check.reason == "login_failed":
             await message.answer(
                 "Не удалось войти в аккаунт MangaBuff.\n"
-                "Проверьте MANGABUFF_EMAIL, MANGABUFF_PASSWORD и MANGABUFF_LOGIN_FIELD в Railway."
+                "Обратитесь за помощью к @reeigans"
             )
         elif check.reason == "club_not_found":
             await message.answer(
