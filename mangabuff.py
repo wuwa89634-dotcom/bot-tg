@@ -328,10 +328,15 @@ def _default_headers() -> dict[str, str]:
 
 def _login(session: requests.Session) -> None:
     login_url = os.getenv("MANGABUFF_LOGIN_URL", "https://mangabuff.ru/login")
-    email = os.environ["MANGABUFF_EMAIL"].strip()
-    password = os.environ["MANGABUFF_PASSWORD"]
-    login_field = os.getenv("MANGABUFF_LOGIN_FIELD", "email")
-    password_field = os.getenv("MANGABUFF_PASSWORD_FIELD", "password")
+    email = _clean_credential(os.environ["MANGABUFF_EMAIL"])
+    password = _clean_credential(os.environ["MANGABUFF_PASSWORD"])
+    if not email or not password:
+        raise MangaBuffLoginError("MANGABUFF_EMAIL or MANGABUFF_PASSWORD is empty")
+
+    if os.getenv("MANGABUFF_LOGIN_FIELD") not in (None, "", "email"):
+        logging.warning("MANGABUFF_LOGIN_FIELD is obsolete and will be ignored")
+    if os.getenv("MANGABUFF_PASSWORD_FIELD") not in (None, "", "password"):
+        logging.warning("MANGABUFF_PASSWORD_FIELD is obsolete and will be ignored")
 
     login_page = session.get(login_url, timeout=15)
     login_page.raise_for_status()
@@ -342,11 +347,10 @@ def _login(session: requests.Session) -> None:
     action = form.get("action") if form else None
     post_url = urljoin(login_url, action) if action else login_url
     csrf = _extract_csrf_token(soup)
-    payload = _form_payload(form)
-    payload[login_field] = email
-    payload[password_field] = password
-    if csrf:
-        payload["_token"] = csrf
+    payload = {
+        "email": email,
+        "password": password,
+    }
 
     headers = {
         "Referer": login_url,
@@ -365,9 +369,13 @@ def _login(session: requests.Session) -> None:
     )
     if response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
         try:
-            error_message = response.json().get("message")
+            error_data = response.json()
         except (ValueError, AttributeError):
-            error_message = None
+            error_data = {}
+        error_message = error_data.get("message")
+        validation_errors = _format_validation_errors(error_data.get("errors"))
+        if validation_errors:
+            error_message = f"{error_message or 'Validation failed'}; {validation_errors}"
         raise MangaBuffLoginError(
             error_message or "MangaBuff rejected the account credentials"
         )
@@ -383,18 +391,25 @@ def _login(session: requests.Session) -> None:
         )
 
 
-def _form_payload(form: Any) -> dict[str, str]:
-    if not form:
-        return {}
+def _clean_credential(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1].strip()
+    return value
 
-    payload: dict[str, str] = {}
-    for input_tag in form.select("input[name]"):
-        name = input_tag.get("name")
-        value = input_tag.get("value", "")
-        input_type = (input_tag.get("type") or "").lower()
-        if name and input_type not in {"submit", "button", "image", "file"}:
-            payload[name] = value
-    return payload
+
+def _format_validation_errors(errors: Any) -> str | None:
+    if not isinstance(errors, dict):
+        return None
+
+    parts: list[str] = []
+    for field, messages in errors.items():
+        if isinstance(messages, list):
+            text = " ".join(str(message) for message in messages)
+        else:
+            text = str(messages)
+        parts.append(f"{field}: {text}")
+    return "; ".join(parts) or None
 
 
 def _response_requires_auth(response: requests.Response) -> bool:

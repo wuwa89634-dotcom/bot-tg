@@ -52,9 +52,7 @@ https://mangabuff.ru/users/854887
 - добавить `MANGABUFF_COOKIE` со значением cookie авторизованной сессии MangaBuff;
 - или добавить `MANGABUFF_EMAIL` и `MANGABUFF_PASSWORD`, чтобы бот сам входил в аккаунт MangaBuff.
 
-Для автоматического входа по умолчанию используется `MANGABUFF_LOGIN_URL=https://mangabuff.ru/login`, поле логина `email`, поле пароля `password`. Если форма MangaBuff использует другие имена полей, их можно переопределить через `MANGABUFF_LOGIN_FIELD` и `MANGABUFF_PASSWORD_FIELD`.
-
-Если в Railway logs появилась причина `login_failed`, попробуйте заменить `MANGABUFF_LOGIN_FIELD` на `login` или `username`.
+Для автоматического входа используется `MANGABUFF_LOGIN_URL=https://mangabuff.ru/login`. Бот отправляет поля `email` и `password`, которые использует текущая форма MangaBuff.
 
 Если MangaBuff возвращает `403` уже на `https://mangabuff.ru/login`, значит сайт блокирует запросы с Railway до авторизации. В этом случае можно задать `MANGABUFF_PROXY_URL`, чтобы запросы к MangaBuff шли через другой адрес, или перенести бота на сервер, который MangaBuff не блокирует.
 
