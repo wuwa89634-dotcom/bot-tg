@@ -255,13 +255,29 @@ def check_profile_page_for_club(profile_url: str, club_slug: str) -> ProfileChec
 
 
 def _get(url: str) -> requests.Response:
+    global _LOGIN_DONE
     session = _get_session()
     response = session.get(
         url,
         timeout=15,
     )
     response.raise_for_status()
+    if _response_requires_auth(response) and _account_credentials_available():
+        logging.info("MangaBuff session requires reauthentication")
+        session.headers.pop("Cookie", None)
+        try:
+            _login(session)
+        except requests.RequestException as exc:
+            _LOGIN_DONE = False
+            raise MangaBuffLoginError(f"{type(exc).__name__}: {exc}") from exc
+        _LOGIN_DONE = True
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
     return response
+
+
+def _account_credentials_available() -> bool:
+    return bool(os.getenv("MANGABUFF_EMAIL") and os.getenv("MANGABUFF_PASSWORD"))
 
 
 def _get_session() -> requests.Session:
@@ -276,19 +292,19 @@ def _get_session() -> requests.Session:
         else:
             logging.info("MangaBuff proxy mode: disabled")
 
-    cookie = os.getenv("MANGABUFF_COOKIE")
-    if cookie:
-        logging.info("MangaBuff auth mode: cookie")
-        _SESSION.headers["Cookie"] = cookie
-        return _SESSION
-
-    if not _LOGIN_DONE and os.getenv("MANGABUFF_EMAIL") and os.getenv("MANGABUFF_PASSWORD"):
+    if not _LOGIN_DONE and _account_credentials_available():
         logging.info("MangaBuff auth mode: account login")
+        _SESSION.headers.pop("Cookie", None)
         try:
             _login(_SESSION)
         except requests.RequestException as exc:
             raise MangaBuffLoginError(f"{type(exc).__name__}: {exc}") from exc
         _LOGIN_DONE = True
+    elif _LOGIN_DONE and _account_credentials_available():
+        return _SESSION
+    elif os.getenv("MANGABUFF_COOKIE"):
+        logging.info("MangaBuff auth mode: cookie")
+        _SESSION.headers["Cookie"] = os.environ["MANGABUFF_COOKIE"]
     elif not _LOGIN_DONE:
         logging.info("MangaBuff auth mode: anonymous")
 
@@ -321,15 +337,14 @@ def _login(session: requests.Session) -> None:
     login_page.raise_for_status()
 
     soup = BeautifulSoup(login_page.text, "html.parser")
-    form = soup.select_one("form") or soup.select_one(".auth .form")
+    password_input = soup.select_one("input[type='password'], input[name='password']")
+    form = password_input.find_parent("form") if password_input else None
     action = form.get("action") if form else None
     post_url = urljoin(login_url, action) if action else login_url
     csrf = _extract_csrf_token(soup)
     payload = _form_payload(form)
     payload[login_field] = email
     payload[password_field] = password
-    for fallback_login_field in ("email", "login", "username", "name"):
-        payload.setdefault(fallback_login_field, email)
     if csrf:
         payload["_token"] = csrf
 
@@ -349,12 +364,14 @@ def _login(session: requests.Session) -> None:
         allow_redirects=True,
     )
     response.raise_for_status()
-    home = session.get("https://mangabuff.ru/", timeout=15)
-    home.raise_for_status()
-    if not _page_indicates_auth(home.text, home.url):
+    validation_url = os.getenv("CLUB_URL", "https://mangabuff.ru/")
+    validation = session.get(validation_url, timeout=15)
+    validation.raise_for_status()
+    if _response_requires_auth(validation):
         raise MangaBuffLoginError(
             f"login_failed post_url={post_url} post_status={response.status_code} "
-            f"home_url={home.url} home_status={home.status_code} home_bytes={len(home.text)}"
+            f"validation_url={validation.url} validation_status={validation.status_code} "
+            f"validation_bytes={len(validation.text)}"
         )
 
 
@@ -370,14 +387,6 @@ def _form_payload(form: Any) -> dict[str, str]:
         if name and input_type not in {"submit", "button", "image", "file"}:
             payload[name] = value
     return payload
-
-
-def _page_indicates_auth(html: str, url: str) -> bool:
-    if re.search(r"window\.isAuth\s*=\s*1", html):
-        return True
-    if "/login" not in url and not re.search(r'name=["\']password["\']', html, re.I):
-        return True
-    return False
 
 
 def _response_requires_auth(response: requests.Response) -> bool:
