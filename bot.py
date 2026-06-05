@@ -1210,7 +1210,7 @@ async def register_profile(message: Message) -> None:
         elif check.reason in {"auth_required", "profile_auth_required"}:
             await message.answer(
                 "MangaBuff не дал открыть страницу без авторизации.\n"
-                "Проверьте MANGABUFF_COOKIE или используйте MANGABUFF_EMAIL/MANGABUFF_PASSWORD."
+                "Обратитесь за помощью к @reeigans"
             )
         elif check.reason == "login_failed":
             await message.answer(
