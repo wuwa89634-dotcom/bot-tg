@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+import hashlib
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Any
@@ -333,13 +334,9 @@ def _login(session: requests.Session) -> None:
     if not email or not password:
         raise MangaBuffLoginError("MANGABUFF_EMAIL or MANGABUFF_PASSWORD is empty")
 
-    if os.getenv("MANGABUFF_LOGIN_FIELD") not in (None, "", "email"):
-        logging.warning("MANGABUFF_LOGIN_FIELD is obsolete and will be ignored")
-    if os.getenv("MANGABUFF_PASSWORD_FIELD") not in (None, "", "password"):
-        logging.warning("MANGABUFF_PASSWORD_FIELD is obsolete and will be ignored")
-
     login_page = session.get(login_url, timeout=15)
     login_page.raise_for_status()
+    session_before = _session_cookie_fingerprint(session)
 
     soup = BeautifulSoup(login_page.text, "html.parser")
     password_input = soup.select_one("input[type='password'], input[name='password']")
@@ -367,6 +364,14 @@ def _login(session: requests.Session) -> None:
         timeout=15,
         allow_redirects=True,
     )
+    response_summary = _login_response_summary(response)
+    session_changed = session_before != _session_cookie_fingerprint(session)
+    logging.info(
+        "MangaBuff login response: %s session_cookie_changed=%s cookies=%s",
+        response_summary,
+        session_changed,
+        ",".join(sorted(cookie.name for cookie in session.cookies)),
+    )
     if response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY:
         try:
             error_data = response.json()
@@ -386,6 +391,7 @@ def _login(session: requests.Session) -> None:
     if _response_requires_auth(validation):
         raise MangaBuffLoginError(
             f"login_failed post_url={post_url} post_status={response.status_code} "
+            f"post_response={response_summary} session_cookie_changed={session_changed} "
             f"validation_url={validation.url} validation_status={validation.status_code} "
             f"validation_bytes={len(validation.text)}"
         )
@@ -410,6 +416,43 @@ def _format_validation_errors(errors: Any) -> str | None:
             text = str(messages)
         parts.append(f"{field}: {text}")
     return "; ".join(parts) or None
+
+
+def _session_cookie_fingerprint(session: requests.Session) -> str | None:
+    values = [
+        cookie.value
+        for cookie in session.cookies
+        if cookie.name == "mangabuff_session"
+    ]
+    if not values:
+        return None
+    return hashlib.sha256("|".join(values).encode()).hexdigest()
+
+
+def _login_response_summary(response: requests.Response) -> str:
+    history = ",".join(str(item.status_code) for item in response.history) or "none"
+    content_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+    parts = [
+        f"status={response.status_code}",
+        f"final_url={response.url}",
+        f"history={history}",
+        f"content_type={content_type or 'unknown'}",
+    ]
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        parts.append(f"json_keys={','.join(sorted(str(key) for key in data)) or 'none'}")
+        message = data.get("message")
+        if isinstance(message, str) and message:
+            parts.append(f"message={message[:200]}")
+    else:
+        soup = BeautifulSoup(response.text, "html.parser")
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        if title:
+            parts.append(f"title={title[:100]}")
+    return " ".join(parts)
 
 
 def _response_requires_auth(response: requests.Response) -> bool:
