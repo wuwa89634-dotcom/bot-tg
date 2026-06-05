@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -17,7 +19,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import Config, load_config
 from mangabuff import check_profile_in_club, parse_profile_url
@@ -34,9 +35,41 @@ def now_moscow() -> datetime:
     return datetime.now(config.timezone)
 
 
-def visible_dates() -> list[date]:
-    today = now_moscow().date()
-    return [today, today + timedelta(days=1)]
+def current_slot_start() -> datetime:
+    return now_moscow().replace(minute=0, second=0, microsecond=0)
+
+
+def booking_window_bounds() -> tuple[datetime, datetime]:
+    start = current_slot_start() + timedelta(hours=1)
+    return start, start + timedelta(hours=48)
+
+
+def booking_window_slots() -> list[datetime]:
+    start, end = booking_window_bounds()
+    return [
+        start + timedelta(hours=offset)
+        for offset in range(int((end - start).total_seconds() // 3600))
+    ]
+
+
+def booking_window_dates() -> list[date]:
+    return list(dict.fromkeys(slot.date() for slot in booking_window_slots()))
+
+
+def booking_slot_datetime(booking_date: date, hour: int) -> datetime:
+    return datetime(
+        booking_date.year,
+        booking_date.month,
+        booking_date.day,
+        hour,
+        tzinfo=config.timezone,
+    )
+
+
+def is_bookable_slot(booking_date: date, hour: int) -> bool:
+    slot = booking_slot_datetime(booking_date, hour)
+    start, end = booking_window_bounds()
+    return start <= slot < end
 
 
 def slot_label(hour: int) -> str:
@@ -174,49 +207,94 @@ async def replace_with_text(
 
 
 def bookings_text() -> str:
-    bookings = storage.list_bookings(visible_dates())
-    grouped: dict[str, list[Booking]] = {}
-    for booking in bookings:
-        grouped.setdefault(booking.booking_date, []).append(booking)
+    slots = booking_window_slots()
+    bookings = {
+        (item.booking_date, item.hour): item
+        for item in storage.list_bookings(booking_window_dates())
+    }
 
     parts = ["Расписание вкладов:"]
-    for booking_date in visible_dates():
-        date_key = booking_date.isoformat()
-        parts.append(f"~ {date_key}")
-        day_bookings = grouped.get(date_key, [])
-        if day_bookings:
-            for booking in day_bookings:
-                parts.append(f"- {slot_label(booking.hour)} - {user_label(booking)}")
-        else:
-            parts.append("- свободно")
+    for booking_date in booking_window_dates():
+        parts.append(f"~ {booking_date.isoformat()}")
+        day_slots = [slot for slot in slots if slot.date() == booking_date]
+        index = 0
+        while index < len(day_slots):
+            slot = day_slots[index]
+            booking = bookings.get((slot.date().isoformat(), slot.hour))
+            if not booking:
+                parts.append(f"- {slot_label(slot.hour)} - свободно")
+                index += 1
+                continue
+
+            end_index = index + 1
+            while end_index < len(day_slots):
+                next_slot = day_slots[end_index]
+                next_booking = bookings.get(
+                    (next_slot.date().isoformat(), next_slot.hour)
+                )
+                if not next_booking or next_booking.telegram_id != booking.telegram_id:
+                    break
+                end_index += 1
+
+            if end_index - index >= 2:
+                end_time = day_slots[end_index - 1] + timedelta(hours=1)
+                time_range = f"{slot:%H:%M} - {end_time:%H:%M}"
+            else:
+                time_range = slot_label(slot.hour)
+            parts.append(f"- {time_range} - {user_label(booking)}")
+            index = end_index
         parts.append("")
+
+    current_slot = current_slot_start()
+    current_booking = storage.get_booking(current_slot.date(), current_slot.hour)
+    parts.append("Сейчас на очереди:")
+    if current_booking:
+        parts.append(f"- {user_label(current_booking)}")
+    else:
+        parts.append("- Сейчас свободно.")
 
     return "\n".join(parts).strip()
 
 
 def bookings_keyboard(current_user_id: int) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    current = now_moscow()
-    current_hour = current.hour
+    slots = booking_window_slots()
     bookings = {
         (item.booking_date, item.hour): item
-        for item in storage.list_bookings(visible_dates())
+        for item in storage.list_bookings(booking_window_dates())
     }
+    rows: list[list[InlineKeyboardButton]] = []
 
-    for booking_date in visible_dates():
-        start_hour = current_hour + 1 if booking_date == current.date() else 0
-        for hour in range(start_hour, 24):
-            booking = bookings.get((booking_date.isoformat(), hour))
+    for booking_date in booking_window_dates():
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"~ {booking_date.isoformat()}",
+                    callback_data="noop",
+                )
+            ]
+        )
+        day_buttons: list[InlineKeyboardButton] = []
+        for slot in (item for item in slots if item.date() == booking_date):
+            booking = bookings.get((slot.date().isoformat(), slot.hour))
             if booking:
                 prefix = "✅" if booking.telegram_id == current_user_id else "❌"
-                text = f"{prefix} {hour:02d}:00"
+                text = f"{prefix} {slot.hour:02d}:00"
             else:
-                text = slot_label(hour)
-            builder.button(text=text, callback_data=f"book:{booking_date.isoformat()}:{hour}")
+                text = slot_label(slot.hour)
+            day_buttons.append(
+                InlineKeyboardButton(
+                    text=text,
+                    callback_data=f"book:{slot.date().isoformat()}:{slot.hour}",
+                )
+            )
 
-    builder.adjust(4)
-    builder.row(InlineKeyboardButton(text="Назад", callback_data="menu"))
-    return builder.as_markup()
+        rows.extend(
+            day_buttons[index : index + 4]
+            for index in range(0, len(day_buttons), 4)
+        )
+
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def send_bookings(message: Message, telegram_id: int) -> None:
@@ -275,6 +353,20 @@ async def refresh_schedule_message(bot: Bot) -> None:
             logging.exception("Schedule message is unavailable")
     except Exception:
         logging.exception("Failed to refresh schedule message")
+
+
+async def schedule_refresh_loop(bot: Bot) -> None:
+    while True:
+        try:
+            await refresh_schedule_message(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Unexpected schedule refresh error")
+
+        current = now_moscow()
+        next_hour = current.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        await asyncio.sleep(max((next_hour - current).total_seconds() + 2, 1))
 
 
 def _setting_int(key: str) -> int | None:
@@ -574,6 +666,11 @@ async def on_bookings(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == "noop")
+async def on_noop(call: CallbackQuery) -> None:
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("book:"))
 async def on_book_slot(call: CallbackQuery, bot: Bot) -> None:
     user = storage.get_user(call.from_user.id)
@@ -584,10 +681,7 @@ async def on_book_slot(call: CallbackQuery, bot: Bot) -> None:
     _, date_text, hour_text = call.data.split(":")
     booking_date = date.fromisoformat(date_text)
     hour = int(hour_text)
-    current = now_moscow()
-    if booking_date not in visible_dates() or (
-        booking_date == current.date() and hour <= current.hour
-    ):
+    if not is_bookable_slot(booking_date, hour):
         await call.answer("Это время уже недоступно.", show_alert=True)
         return
 
@@ -621,10 +715,14 @@ async def main() -> None:
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
-    await dispatcher.start_polling(bot)
+    refresh_task = asyncio.create_task(schedule_refresh_loop(bot))
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await refresh_task
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())
