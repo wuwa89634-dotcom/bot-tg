@@ -469,14 +469,7 @@ def _url_origin(url: str) -> str:
 
 
 def _response_requires_auth(response: requests.Response) -> bool:
-    if "/login" in response.url:
-        return True
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    if soup.select_one("input[type='password'], input[name='password']"):
-        return True
-
-    return False
+    return urlsplit(response.url).path.rstrip("/") == "/login"
 
 
 def _extract_csrf_token(soup: BeautifulSoup) -> str | None:
