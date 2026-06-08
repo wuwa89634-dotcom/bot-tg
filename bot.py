@@ -132,19 +132,46 @@ def back_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-async def booking_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
+async def bot_username(bot: Bot) -> str:
     username = storage.get_setting("bot_username")
     if not username:
         me = await bot.get_me()
         username = me.username or ""
         if username:
             storage.set_setting("bot_username", username)
+    return username
+
+
+async def booking_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
+    username = await bot_username(bot)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="Записаться на вклады",
                     url=f"https://t.me/{username}?start=bookings",
+                )
+            ]
+        ]
+    )
+
+
+def profile_link_keyboard(profile_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть профиль", url=profile_url)]
+        ]
+    )
+
+
+async def registration_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
+    username = await bot_username(bot)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Зарегистрироваться",
+                    url=f"https://t.me/{username}?start=register",
                 )
             ]
         ]
@@ -1055,6 +1082,7 @@ async def chat_profile_link(message: Message) -> None:
     remember_chat_user(message)
     if not message.reply_to_message or not message.reply_to_message.from_user:
         await message.answer("Ответьте командой .ник на сообщение участника.")
+        await _delete_silent(message)
         return
 
     target = message.reply_to_message.from_user
@@ -1067,15 +1095,26 @@ async def chat_profile_link(message: Message) -> None:
         )
     user = storage.get_user(target.id)
     if not user:
-        await message.answer("Этот участник ещё не зарегистрирован в боте.")
+        await message.bot.send_message(
+            chat_id=message.chat.id,
+            text="Этот участник ещё не зарегистрирован в боте.",
+            message_thread_id=message.message_thread_id,
+            reply_to_message_id=message.reply_to_message.message_id,
+            reply_markup=await registration_link_keyboard(message.bot),
+        )
+        await _delete_silent(message)
         return
 
-    username = f"@{target.username}" if target.username else target.full_name
-    await message.answer(
-        f"{html.escape(username)}: {html.escape(user.profile_url)}",
+    await message.bot.send_message(
+        chat_id=message.chat.id,
+        text=f"Ник на MangaBuff: <b>{html.escape(user.display_name)}</b>",
         parse_mode=ParseMode.HTML,
+        message_thread_id=message.message_thread_id,
+        reply_to_message_id=message.reply_to_message.message_id,
+        reply_markup=profile_link_keyboard(user.profile_url),
         disable_web_page_preview=True,
     )
+    await _delete_silent(message)
 
 
 @router.message(F.text == ".распес")
