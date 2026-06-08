@@ -11,7 +11,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -398,6 +398,45 @@ async def edit_giveaway_card(
         )
 
 
+async def pin_giveaway_message(bot: Bot, chat_id: int, message_id: int) -> bool:
+    try:
+        await bot.pin_chat_message(
+            chat_id=chat_id,
+            message_id=message_id,
+            disable_notification=True,
+        )
+        return True
+    except TelegramAPIError as error:
+        logging.warning(
+            "Failed to pin giveaway message: chat_id=%s message_id=%s error=%s",
+            chat_id,
+            message_id,
+            error,
+        )
+        return False
+
+
+async def unpin_giveaway_message(bot: Bot, giveaway: Giveaway) -> bool:
+    if giveaway.chat_id is None or giveaway.message_id is None:
+        return False
+    try:
+        await bot.unpin_chat_message(
+            chat_id=giveaway.chat_id,
+            message_id=giveaway.message_id,
+        )
+        return True
+    except TelegramAPIError as error:
+        logging.warning(
+            "Failed to unpin giveaway message: giveaway_id=%s chat_id=%s "
+            "message_id=%s error=%s",
+            giveaway.id,
+            giveaway.chat_id,
+            giveaway.message_id,
+            error,
+        )
+        return False
+
+
 def giveaway_list_keyboard(
     giveaways: list[Giveaway],
     back_callback: str = "giveaways",
@@ -716,6 +755,7 @@ async def finish_giveaway(bot: Bot, giveaway_id: int) -> None:
                 logging.warning("Failed to edit completed giveaway %s: %s", giveaway_id, error)
 
         if completed.chat_id and completed.message_id:
+            await unpin_giveaway_message(bot, completed)
             if winners:
                 prefix = f"🎉 Победители розыгрыша «{html.escape(completed.title)}»:\n"
                 chunks: list[str] = []
@@ -1550,10 +1590,18 @@ async def on_giveaway_publish(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     storage.set_giveaway_message(giveaway_id, sent.message_id)
+    pinned = await pin_giveaway_message(call.bot, chat_id, sent.message_id)
     await state.clear()
     await replace_with_text(
         call.message,
-        "Розыгрыш опубликован.",
+        (
+            "Розыгрыш опубликован и закреплён."
+            if pinned
+            else (
+                "Розыгрыш опубликован, но закрепить сообщение не удалось.\n"
+                "Проверьте право бота «Закрепление сообщений»."
+            )
+        ),
         reply_markup=giveaways_menu_keyboard(),
     )
     await call.answer()
@@ -1617,6 +1665,7 @@ async def on_giveaway_cancel(call: CallbackQuery) -> None:
     except TelegramBadRequest as error:
         if "message is not modified" not in str(error).lower():
             logging.warning("Failed to edit cancelled giveaway: %s", error)
+    await unpin_giveaway_message(call.bot, cancelled)
     await replace_with_text(
         call.message,
         giveaway_text(cancelled),
