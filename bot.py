@@ -1107,7 +1107,11 @@ async def chat_profile_link(message: Message) -> None:
 
     await message.bot.send_message(
         chat_id=message.chat.id,
-        text=f"Ник на MangaBuff: <b>{html.escape(user.display_name)}</b>",
+        text=(
+            "📌 Ник на MangaBuff: "
+            f'<a href="{html.escape(user.profile_url, quote=True)}">'
+            f"<b>{html.escape(user.display_name)}</b></a>"
+        ),
         parse_mode=ParseMode.HTML,
         message_thread_id=message.message_thread_id,
         reply_to_message_id=message.reply_to_message.message_id,
