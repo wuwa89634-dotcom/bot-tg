@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -12,8 +11,6 @@ from dotenv import load_dotenv
 @dataclass(frozen=True)
 class Config:
     bot_token: str
-    club_url: str
-    club_slug: str
     chat_url: str | None
     timezone: ZoneInfo
     db_path: str
@@ -39,20 +36,12 @@ def _int_set(value: str | None) -> set[int]:
     return {int(item.strip()) for item in value.split(",") if item.strip()}
 
 
-def _club_slug_from_url(club_url: str) -> str:
-    path_parts = [part for part in urlparse(club_url).path.split("/") if part]
-    if len(path_parts) >= 2 and path_parts[0] == "clubs":
-        return path_parts[1]
-    raise RuntimeError("CLUB_URL must look like https://mangabuff.ru/clubs/fu-razvrat")
-
-
 def load_config() -> Config:
     load_dotenv()
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Set BOT_TOKEN in .env")
 
-    club_url = os.getenv("CLUB_URL", "https://mangabuff.ru/clubs/fu-razvrat").strip()
     default_menu_text = (
         "[ Гений, миллиардер и просто красивый мужчина: @reeigans]\n\n"
         "Вас приветствует бот клуба \"Keepers of Oneiroi\" Он создан для вашего "
@@ -66,8 +55,6 @@ def load_config() -> Config:
 
     return Config(
         bot_token=token,
-        club_url=club_url,
-        club_slug=os.getenv("CLUB_SLUG") or _club_slug_from_url(club_url),
         chat_url=os.getenv("CHAT_URL") or None,
         timezone=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         db_path=os.getenv("DB_PATH", "bot.db"),
@@ -81,5 +68,5 @@ def load_config() -> Config:
         group_chat_id=_optional_int(os.getenv("GROUP_CHAT_ID")),
         schedule_message_id=_optional_int(os.getenv("SCHEDULE_MESSAGE_ID")),
         schedule_thread_id=_optional_int(os.getenv("SCHEDULE_THREAD_ID")),
-        admin_ids=_int_set(os.getenv("ADMIN_IDS")),
+        admin_ids=_int_set(os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID")),
     )

@@ -17,6 +17,17 @@ class ClubUser:
 
 
 @dataclass(frozen=True)
+class RegistrationRequest:
+    telegram_id: int
+    username: str | None
+    telegram_name: str
+    display_name: str
+    profile_id: int
+    profile_url: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class Booking:
     id: int
     booking_date: str
@@ -90,6 +101,16 @@ class Storage:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS registration_requests (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                telegram_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                profile_id INTEGER NOT NULL UNIQUE,
+                profile_url TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 booking_date TEXT NOT NULL,
@@ -156,6 +177,17 @@ class Storage:
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id BIGINT PRIMARY KEY,
                 username TEXT,
+                display_name TEXT NOT NULL,
+                profile_id BIGINT NOT NULL UNIQUE,
+                profile_url TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS registration_requests (
+                telegram_id BIGINT PRIMARY KEY,
+                username TEXT,
+                telegram_name TEXT NOT NULL,
                 display_name TEXT NOT NULL,
                 profile_id BIGINT NOT NULL UNIQUE,
                 profile_url TEXT NOT NULL,
@@ -247,6 +279,120 @@ class Storage:
             (profile_id,),
         ).fetchone()
         return row is not None
+
+    def get_registration_request(
+        self,
+        telegram_id: int,
+    ) -> RegistrationRequest | None:
+        row = self.conn.execute(
+            f"""
+            SELECT *
+            FROM registration_requests
+            WHERE telegram_id = {self.placeholder}
+            """,
+            (telegram_id,),
+        ).fetchone()
+        return _registration_request_from_row(row) if row else None
+
+    def list_registration_requests(self) -> list[RegistrationRequest]:
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM registration_requests
+            ORDER BY created_at, telegram_id
+            """
+        ).fetchall()
+        return [_registration_request_from_row(row) for row in rows]
+
+    def create_registration_request(
+        self,
+        telegram_id: int,
+        username: str | None,
+        telegram_name: str,
+        display_name: str,
+        profile_id: int,
+        profile_url: str,
+    ) -> bool:
+        try:
+            self.conn.execute(
+                f"""
+                DELETE FROM registration_requests
+                WHERE telegram_id = {self.placeholder}
+                """,
+                (telegram_id,),
+            )
+            self.conn.execute(
+                f"""
+                INSERT INTO registration_requests (
+                    telegram_id, username, telegram_name, display_name,
+                    profile_id, profile_url
+                )
+                VALUES ({self._ph(6)})
+                """,
+                (
+                    telegram_id,
+                    username,
+                    telegram_name,
+                    display_name,
+                    profile_id,
+                    profile_url,
+                ),
+            )
+            self.conn.commit()
+            return True
+        except self.integrity_error:
+            self.conn.rollback()
+            return False
+
+    def approve_registration(self, telegram_id: int) -> ClubUser | None:
+        request = self.get_registration_request(telegram_id)
+        if not request:
+            return None
+        try:
+            self.conn.execute(
+                f"""
+                INSERT INTO users (
+                    telegram_id, username, display_name, profile_id, profile_url
+                )
+                VALUES ({self._ph(5)})
+                """,
+                (
+                    request.telegram_id,
+                    request.username,
+                    request.display_name,
+                    request.profile_id,
+                    request.profile_url,
+                ),
+            )
+            self.conn.execute(
+                f"""
+                DELETE FROM registration_requests
+                WHERE telegram_id = {self.placeholder}
+                """,
+                (telegram_id,),
+            )
+            self.conn.commit()
+        except self.integrity_error:
+            self.conn.rollback()
+            return None
+        return self.get_user(telegram_id)
+
+    def reject_registration(
+        self,
+        telegram_id: int,
+    ) -> RegistrationRequest | None:
+        request = self.get_registration_request(telegram_id)
+        if not request:
+            return None
+        self.conn.execute(
+            f"""
+            DELETE FROM registration_requests
+            WHERE telegram_id = {self.placeholder}
+            """,
+            (telegram_id,),
+        )
+        self.conn.commit()
+        return request
 
     def add_user(
         self,
@@ -626,6 +772,18 @@ def _user_from_row(row: Any) -> ClubUser:
         display_name=row["display_name"],
         profile_id=row["profile_id"],
         profile_url=row["profile_url"],
+    )
+
+
+def _registration_request_from_row(row: Any) -> RegistrationRequest:
+    return RegistrationRequest(
+        telegram_id=int(row["telegram_id"]),
+        username=row["username"],
+        telegram_name=row["telegram_name"],
+        display_name=row["display_name"],
+        profile_id=int(row["profile_id"]),
+        profile_url=row["profile_url"],
+        created_at=str(row["created_at"]),
     )
 
 

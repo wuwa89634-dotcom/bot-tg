@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import secrets
 from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
@@ -24,14 +25,46 @@ from aiogram.types import (
 )
 
 from config import Config, load_config
-from mangabuff import check_profile_in_club, parse_profile_url
-from storage import Booking, ChatMember, ClubUser, Giveaway, Storage
+from storage import (
+    Booking,
+    ChatMember,
+    ClubUser,
+    Giveaway,
+    RegistrationRequest,
+    Storage,
+)
 
 
 logging.basicConfig(level=logging.INFO)
 router = Router()
 config: Config
 storage: Storage
+PROFILE_RE = re.compile(
+    r"^https?://(?:www\.)?mangabuff\.ru/users/(\d+)(?:[/?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+class ApprovedCallbackMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: CallbackQuery, data):
+        callback_data = event.data or ""
+        if callback_data.startswith("registration_"):
+            return await handler(event, data)
+        if (
+            storage.get_user(event.from_user.id)
+            or event.from_user.id in config.admin_ids
+        ):
+            return await handler(event, data)
+
+        if storage.get_registration_request(event.from_user.id):
+            text = "Ваша заявка ожидает подтверждения администратора."
+        else:
+            text = "Сначала зарегистрируйтесь через /start."
+        await event.answer(text, show_alert=True)
+        return None
+
+
+router.callback_query.outer_middleware(ApprovedCallbackMiddleware())
 
 
 class GiveawayCreation(StatesGroup):
@@ -42,6 +75,19 @@ class GiveawayCreation(StatesGroup):
     ends_at = State()
     preview = State()
     edit_menu = State()
+
+
+class Registration(StatesGroup):
+    profile_url = State()
+    display_name = State()
+
+
+def parse_profile_url(text: str) -> tuple[int, str] | None:
+    match = PROFILE_RE.match(text.strip())
+    if not match:
+        return None
+    profile_id = int(match.group(1))
+    return profile_id, f"https://mangabuff.ru/users/{profile_id}"
 
 
 def now_moscow() -> datetime:
@@ -176,6 +222,72 @@ async def registration_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def registration_request_keyboard(
+    request: RegistrationRequest,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Подтвердить",
+                    callback_data=f"registration_approve:{request.telegram_id}",
+                ),
+                InlineKeyboardButton(
+                    text="Отклонить",
+                    callback_data=f"registration_reject:{request.telegram_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Открыть профиль",
+                    url=request.profile_url,
+                )
+            ],
+        ]
+    )
+
+
+def registration_request_text(request: RegistrationRequest) -> str:
+    telegram_label = (
+        f"@{request.username}"
+        if request.username
+        else request.telegram_name
+    )
+    return (
+        "<b>Новая заявка на регистрацию</b>\n\n"
+        f'Telegram: <a href="tg://user?id={request.telegram_id}">'
+        f"{html.escape(telegram_label)}</a>\n"
+        f"Telegram ID: <code>{request.telegram_id}</code>\n"
+        f"Ник на MangaBuff: <b>{html.escape(request.display_name)}</b>\n"
+        f'Профиль: <a href="{html.escape(request.profile_url, quote=True)}">'
+        f"{html.escape(request.profile_url)}</a>"
+    )
+
+
+async def notify_registration_admins(
+    bot: Bot,
+    request: RegistrationRequest,
+) -> int:
+    delivered = 0
+    for admin_id in config.admin_ids:
+        try:
+            await bot.send_message(
+                chat_id=admin_id,
+                text=registration_request_text(request),
+                reply_markup=registration_request_keyboard(request),
+                disable_web_page_preview=True,
+            )
+            delivered += 1
+        except TelegramAPIError as error:
+            logging.warning(
+                "Failed to notify registration admin %s about user %s: %s",
+                admin_id,
+                request.telegram_id,
+                error,
+            )
+    return delivered
 
 
 def giveaways_menu_keyboard() -> InlineKeyboardMarkup:
@@ -1000,12 +1112,38 @@ def require_registered(message: Message) -> ClubUser | None:
     return user
 
 
+async def require_approved_chat_user(message: Message) -> bool:
+    if (
+        storage.get_user(message.from_user.id)
+        or message.from_user.id in config.admin_ids
+    ):
+        return True
+    if storage.get_registration_request(message.from_user.id):
+        text = "Ваша заявка ожидает подтверждения администратора."
+    else:
+        text = "Сначала зарегистрируйтесь через личные сообщения бота."
+    await message.answer(text)
+    return False
+
+
 @router.message(Command("start"))
-async def start(message: Message, command: CommandObject) -> None:
+async def start(
+    message: Message,
+    command: CommandObject,
+    state: FSMContext,
+) -> None:
     if message.chat.type != "private":
         return
     user = storage.get_user(message.from_user.id)
     if not user:
+        await state.clear()
+        if storage.get_registration_request(message.from_user.id):
+            await message.answer(
+                "Ваша заявка отправлена.\n"
+                "Ожидайте подтверждения администратора."
+            )
+            return
+        await state.set_state(Registration.profile_url)
         await message.answer(
             "Вы не зарегистрированы в клубе.\n"
             "Отправьте ссылку на ваш профиль в MangaBuff."
@@ -1020,12 +1158,36 @@ async def start(message: Message, command: CommandObject) -> None:
     await send_main_menu(message)
 
 
+@router.message(Command("admin"))
+async def admin_panel(message: Message) -> None:
+    if message.chat.type != "private":
+        return
+    if message.from_user.id not in config.admin_ids:
+        await message.answer("Эта команда доступна только администраторам.")
+        return
+
+    requests = storage.list_registration_requests()
+    if not requests:
+        await message.answer("Заявок на регистрацию сейчас нет.")
+        return
+
+    await message.answer(f"Заявок на регистрацию: {len(requests)}")
+    for request in requests:
+        await message.answer(
+            registration_request_text(request),
+            reply_markup=registration_request_keyboard(request),
+            disable_web_page_preview=True,
+        )
+
+
 @router.message(Command("post_schedule"))
 async def post_schedule(message: Message) -> None:
     if message.chat.type == "private":
         await message.answer("Эту команду нужно отправить в чате клуба.")
         return
     remember_chat_user(message)
+    if not await require_approved_chat_user(message):
+        return
     await ensure_schedule_message(message.bot, message)
 
 
@@ -1035,6 +1197,8 @@ async def force_refresh_schedule(message: Message) -> None:
         await message.answer("Эту команду нужно отправить в чате клуба.")
         return
     remember_chat_user(message)
+    if not await require_approved_chat_user(message):
+        return
     await refresh_schedule_message(message.bot)
     await _delete_silent(message)
 
@@ -1043,6 +1207,8 @@ async def force_refresh_schedule(message: Message) -> None:
 async def set_giveaway_topic(message: Message) -> None:
     if message.chat.type == "private":
         await message.answer("Эту команду нужно отправить в нужной теме чата.")
+        return
+    if not await require_approved_chat_user(message):
         return
     if not await can_set_giveaway_topic(message):
         await message.answer("Настраивать тему розыгрышей может только администратор чата.")
@@ -1080,6 +1246,9 @@ async def chat_profile_link(message: Message) -> None:
     if message.chat.type == "private":
         return
     remember_chat_user(message)
+    if not await require_approved_chat_user(message):
+        await _delete_silent(message)
+        return
     if not message.reply_to_message or not message.reply_to_message.from_user:
         await message.answer("Ответьте командой .ник на сообщение участника.")
         await _delete_silent(message)
@@ -1126,6 +1295,8 @@ async def chat_schedule(message: Message) -> None:
     if message.chat.type == "private":
         return
     remember_chat_user(message)
+    if not await require_approved_chat_user(message):
+        return
     await message.answer(
         bookings_text(),
         reply_markup=await booking_link_keyboard(message.bot),
@@ -1137,6 +1308,8 @@ async def chat_mention_all(message: Message) -> None:
     if message.chat.type == "private":
         return
     remember_chat_user(message)
+    if not await require_approved_chat_user(message):
+        return
 
     text = message.text[len(".всем") :].strip()
     if not text:
@@ -1260,71 +1433,185 @@ async def giveaway_ends_at_input(message: Message, state: FSMContext) -> None:
     await show_giveaway_preview(message, state)
 
 
+@router.message(Registration.profile_url)
+async def registration_profile_url(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if message.chat.type != "private" or not message.text:
+        return
+    parsed = parse_profile_url(message.text)
+    if not parsed:
+        await message.answer(
+            "Отправьте ссылку вида https://mangabuff.ru/users/854887"
+        )
+        return
+
+    profile_id, profile_url = parsed
+    if storage.profile_exists(profile_id):
+        await message.answer(
+            "Этот профиль MangaBuff уже зарегистрирован в боте.\n"
+            "Отправьте ссылку на другой профиль."
+        )
+        return
+
+    await state.update_data(profile_id=profile_id, profile_url=profile_url)
+    await state.set_state(Registration.display_name)
+    await message.answer("Теперь отправьте ваш ник на сайте MangaBuff.")
+
+
+@router.message(Registration.display_name)
+async def registration_display_name(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if message.chat.type != "private" or not message.text:
+        return
+    display_name = message.text.strip()
+    if not 1 <= len(display_name) <= 100:
+        await message.answer("Ник должен содержать от 1 до 100 символов.")
+        return
+
+    data = await state.get_data()
+    profile_id = data.get("profile_id")
+    profile_url = data.get("profile_url")
+    if not profile_id or not profile_url:
+        await state.set_state(Registration.profile_url)
+        await message.answer(
+            "Регистрация начата заново.\n"
+            "Отправьте ссылку на профиль MangaBuff."
+        )
+        return
+
+    created = storage.create_registration_request(
+        telegram_id=message.from_user.id,
+        username=message.from_user.username,
+        telegram_name=message.from_user.full_name,
+        display_name=display_name,
+        profile_id=int(profile_id),
+        profile_url=str(profile_url),
+    )
+    if not created:
+        await state.set_state(Registration.profile_url)
+        await message.answer(
+            "Этот профиль уже указан в другой заявке.\n"
+            "Отправьте ссылку на другой профиль MangaBuff."
+        )
+        return
+
+    request = storage.get_registration_request(message.from_user.id)
+    await state.clear()
+    if not request:
+        await message.answer("Не удалось сохранить заявку. Попробуйте ещё раз: /start")
+        return
+
+    delivered = await notify_registration_admins(message.bot, request)
+    if delivered:
+        await message.answer(
+            "Заявка отправлена администратору.\n"
+            "Ожидайте подтверждения."
+        )
+    else:
+        await message.answer(
+            "Заявка сохранена, но администратору не удалось отправить уведомление.\n"
+            "Обратитесь к администратору клуба."
+        )
+
+
 @router.message(F.text)
-async def register_profile(message: Message) -> None:
+async def private_registration_fallback(
+    message: Message,
+    state: FSMContext,
+) -> None:
     if message.chat.type != "private":
         remember_chat_user(message)
         return
     if storage.get_user(message.from_user.id):
         await message.answer("Вы уже зарегистрированы. Нажмите /start.")
         return
-
-    profile_url = message.text.strip()
-    profile_id = parse_profile_url(profile_url)
-    if profile_id is None:
-        await message.answer("Отправьте ссылку вида https://mangabuff.ru/users/854887")
-        return
-    if storage.profile_exists(profile_id):
+    if storage.get_registration_request(message.from_user.id):
         await message.answer(
-            "Этот профиль MangaBuff уже зарегистрирован в боте.\n"
-            "Отправьте ссылку на ваш профиль."
+            "Ваша заявка отправлена.\n"
+            "Ожидайте подтверждения администратора."
+        )
+        return
+    await state.set_state(Registration.profile_url)
+    await message.answer(
+        "Для регистрации отправьте ссылку на ваш профиль MangaBuff."
+    )
+
+
+@router.callback_query(F.data.startswith("registration_approve:"))
+async def approve_registration(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    telegram_id = int(call.data.split(":", 1)[1])
+    request = storage.get_registration_request(telegram_id)
+    if not request:
+        await call.answer("Эта заявка уже обработана.", show_alert=True)
+        return
+    user = storage.approve_registration(telegram_id)
+    if not user:
+        await call.answer(
+            "Не удалось подтвердить заявку. Возможно, профиль уже используется.",
+            show_alert=True,
         )
         return
 
-    await message.answer("Проверяю профиль и участие в клубе...")
-    check = check_profile_in_club(profile_url, config.club_slug, config.club_url)
-    if not check.ok:
-        logging.warning("MangaBuff profile check failed: reason=%s detail=%s", check.reason, check.detail)
-        if check.reason == "network":
-            await message.answer(
-                "Не удалось открыть страницу клуба MangaBuff.\n"
-                "Попробуйте ещё раз позже. Если ошибка повторится, проверьте логи Railway."
-            )
-        elif check.reason in {"auth_required", "profile_auth_required"}:
-            await message.answer(
-                "MangaBuff не дал открыть страницу без авторизации.\n"
-                "Обратитесь за помощью к @reeigans"
-            )
-        elif check.reason == "login_failed":
-            await message.answer(
-                "Не удалось войти в аккаунт MangaBuff.\n"
-                "Обратитесь за помощью к @reeigans"
-            )
-        elif check.reason == "club_not_found":
-            await message.answer(
-                "Не найдена страница клуба MangaBuff.\n"
-                "Проверьте переменную CLUB_URL в Railway."
-            )
-        elif check.reason == "members_unavailable":
-            await message.answer(
-                "Не удалось прочитать список участников клуба.\n"
-                "Проверьте доступ к странице клуба или добавьте MANGABUFF_COOKIE в Railway."
-            )
-        else:
-            await message.answer(
-                "Вы не состоите в клубе.\n"
-                "Отправьте ссылку на профиль MangaBuff еще раз."
-            )
+    await call.message.edit_text(
+        f"{registration_request_text(request)}\n\n"
+        f"✅ Подтверждено администратором "
+        f"<code>{call.from_user.id}</code>",
+        reply_markup=None,
+        disable_web_page_preview=True,
+    )
+    try:
+        await call.bot.send_message(
+            telegram_id,
+            "Ваша регистрация подтверждена.\n"
+            "Нажмите /start, чтобы открыть меню бота.",
+        )
+    except TelegramAPIError as error:
+        logging.warning(
+            "Failed to notify approved user %s: %s",
+            telegram_id,
+            error,
+        )
+    await call.answer("Профиль подтверждён.")
+
+
+@router.callback_query(F.data.startswith("registration_reject:"))
+async def reject_registration(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    telegram_id = int(call.data.split(":", 1)[1])
+    request = storage.reject_registration(telegram_id)
+    if not request:
+        await call.answer("Эта заявка уже обработана.", show_alert=True)
         return
 
-    storage.add_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        display_name=check.display_name or f"MangaBuff #{profile_id}",
-        profile_id=profile_id,
-        profile_url=profile_url,
+    await call.message.edit_text(
+        f"{registration_request_text(request)}\n\n"
+        f"❌ Отклонено администратором "
+        f"<code>{call.from_user.id}</code>",
+        reply_markup=None,
+        disable_web_page_preview=True,
     )
-    await message.answer("Вы успешно добавлены, перезапустите бота: /start")
+    try:
+        await call.bot.send_message(
+            telegram_id,
+            "Ваша заявка на регистрацию отклонена.\n"
+            "Проверьте ссылку и ник, затем отправьте новую заявку через /start.",
+        )
+    except TelegramAPIError as error:
+        logging.warning(
+            "Failed to notify rejected user %s: %s",
+            telegram_id,
+            error,
+        )
+    await call.answer("Заявка отклонена.")
 
 
 @router.callback_query(F.data == "menu")
@@ -1799,6 +2086,10 @@ async def main() -> None:
     storage = Storage(config.database_url or config.db_path)
     storage.init()
     storage.recover_drawing_giveaways()
+    if not config.admin_ids:
+        logging.warning(
+            "ADMIN_IDS is empty: registration requests cannot be approved"
+        )
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
