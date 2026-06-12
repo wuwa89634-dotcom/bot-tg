@@ -30,6 +30,7 @@ from storage import (
     ChatMember,
     ClubUser,
     Giveaway,
+    PreparedUser,
     RegistrationRequest,
     Storage,
 )
@@ -43,6 +44,7 @@ PROFILE_RE = re.compile(
     r"^https?://(?:www\.)?mangabuff\.ru/users/(\d+)(?:[/?#].*)?$",
     re.IGNORECASE,
 )
+TELEGRAM_USERNAME_RE = re.compile(r"^@?[A-Za-z0-9_]{3,32}$")
 
 
 class ApprovedCallbackMiddleware(BaseMiddleware):
@@ -80,6 +82,12 @@ class GiveawayCreation(StatesGroup):
 class Registration(StatesGroup):
     profile_url = State()
     display_name = State()
+
+
+class AdminAddUser(StatesGroup):
+    username = State()
+    display_name = State()
+    profile_url = State()
 
 
 def parse_profile_url(text: str) -> tuple[int, str] | None:
@@ -161,20 +169,91 @@ def remember_chat_user(message: Message) -> None:
     )
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Запись на вклады", callback_data="bookings")],
-            [InlineKeyboardButton(text="Розыгрыши", callback_data="giveaways")],
-            [InlineKeyboardButton(text="Гайд по использованию", callback_data="guide")],
-            [InlineKeyboardButton(text="Список участников", callback_data="users")],
-        ]
-    )
+def main_menu_keyboard(viewer_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="Запись на вклады", callback_data="bookings")],
+        [InlineKeyboardButton(text="Розыгрыши", callback_data="giveaways")],
+        [InlineKeyboardButton(text="Гайд по использованию", callback_data="guide")],
+        [InlineKeyboardButton(text="Список участников", callback_data="users")],
+    ]
+    if viewer_id in config.admin_ids:
+        rows.append(
+            [InlineKeyboardButton(text="Настройки", callback_data="settings")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="menu")]]
+    )
+
+
+def settings_keyboard() -> InlineKeyboardMarkup:
+    requests_count = len(storage.list_registration_requests())
+    prepared_count = len(storage.list_prepared_users())
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"Активные заявки — {requests_count}",
+                    callback_data="settings_requests",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Добавить человека",
+                    callback_data="settings_add_user",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"Ожидают /start — {prepared_count}",
+                    callback_data="settings_prepared",
+                )
+            ],
+            [InlineKeyboardButton(text="Назад", callback_data="menu")],
+        ]
+    )
+
+
+def settings_requests_keyboard(
+    requests: list[RegistrationRequest],
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"@{item.username}" if item.username else item.telegram_name[:32],
+                callback_data=f"settings_request:{item.telegram_id}",
+            )
+        ]
+        for item in requests
+    ]
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def settings_prepared_keyboard(
+    users: list[PreparedUser],
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"@{item.username}",
+                callback_data=f"settings_prepared_view:{item.username.casefold()}",
+            )
+        ]
+        for item in users
+    ]
+    rows.append([InlineKeyboardButton(text="Назад", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_add_user_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Отмена", callback_data="settings")]
+        ]
     )
 
 
@@ -226,27 +305,31 @@ async def registration_link_keyboard(bot: Bot) -> InlineKeyboardMarkup:
 
 def registration_request_keyboard(
     request: RegistrationRequest,
+    back_callback: str | None = None,
 ) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Подтвердить",
-                    callback_data=f"registration_approve:{request.telegram_id}",
-                ),
-                InlineKeyboardButton(
-                    text="Отклонить",
-                    callback_data=f"registration_reject:{request.telegram_id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Открыть профиль",
-                    url=request.profile_url,
-                )
-            ],
-        ]
-    )
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="Подтвердить",
+                callback_data=f"registration_approve:{request.telegram_id}",
+            ),
+            InlineKeyboardButton(
+                text="Отклонить",
+                callback_data=f"registration_reject:{request.telegram_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Открыть профиль",
+                url=request.profile_url,
+            )
+        ],
+    ]
+    if back_callback:
+        rows.append(
+            [InlineKeyboardButton(text="Назад", callback_data=back_callback)]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def registration_request_text(request: RegistrationRequest) -> str:
@@ -263,6 +346,43 @@ def registration_request_text(request: RegistrationRequest) -> str:
         f"Ник на MangaBuff: <b>{html.escape(request.display_name)}</b>\n"
         f'Профиль: <a href="{html.escape(request.profile_url, quote=True)}">'
         f"{html.escape(request.profile_url)}</a>"
+    )
+
+
+def prepared_user_text(user: PreparedUser) -> str:
+    return (
+        "<b>Предварительно добавленный пользователь</b>\n\n"
+        f"Telegram: <b>@{html.escape(user.username)}</b>\n"
+        f"Ник на MangaBuff: <b>{html.escape(user.display_name)}</b>\n"
+        f'Профиль: <a href="{html.escape(user.profile_url, quote=True)}">'
+        f"{html.escape(user.profile_url)}</a>\n\n"
+        "Профиль будет автоматически привязан, когда пользователь с этим "
+        "Telegram-тегом нажмёт /start."
+    )
+
+
+def prepared_user_view_keyboard(user: PreparedUser) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Удалить",
+                    callback_data=f"settings_prepared_delete:{user.username.casefold()}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Открыть профиль",
+                    url=user.profile_url,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Назад",
+                    callback_data="settings_prepared",
+                )
+            ],
+        ]
     )
 
 
@@ -642,7 +762,7 @@ def message_has_media(message: Message) -> bool:
 
 
 async def send_main_menu(message: Message) -> None:
-    markup = main_menu_keyboard()
+    markup = main_menu_keyboard(message.from_user.id)
     photo_path = menu_photo_path()
     if photo_path:
         await message.answer_photo(
@@ -656,12 +776,12 @@ async def send_main_menu(message: Message) -> None:
 
 async def edit_or_send_menu(call: CallbackQuery) -> None:
     if call.message:
-        await replace_with_menu(call.message)
+        await replace_with_menu(call.message, call.from_user.id)
     await call.answer()
 
 
-async def replace_with_menu(message: Message) -> None:
-    markup = main_menu_keyboard()
+async def replace_with_menu(message: Message, viewer_id: int) -> None:
+    markup = main_menu_keyboard(viewer_id)
     photo_path = menu_photo_path()
     if not photo_path:
         await replace_with_text(message, config.menu_text, reply_markup=markup)
@@ -1135,8 +1255,22 @@ async def start(
     if message.chat.type != "private":
         return
     user = storage.get_user(message.from_user.id)
+    if not user and message.from_user.username:
+        user = storage.claim_prepared_user(
+            message.from_user.id,
+            message.from_user.username,
+        )
+        if user:
+            await state.clear()
+            await message.answer(
+                "Ваш профиль уже был добавлен администратором.\n"
+                "Регистрация выполнена автоматически."
+            )
     if not user:
         await state.clear()
+        if message.from_user.id in config.admin_ids:
+            await send_main_menu(message)
+            return
         if storage.get_registration_request(message.from_user.id):
             await message.answer(
                 "Ваша заявка отправлена.\n"
@@ -1433,6 +1567,107 @@ async def giveaway_ends_at_input(message: Message, state: FSMContext) -> None:
     await show_giveaway_preview(message, state)
 
 
+@router.message(AdminAddUser.username)
+async def admin_add_user_username(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if message.chat.type != "private" or message.from_user.id not in config.admin_ids:
+        return
+    if not message.text or not TELEGRAM_USERNAME_RE.fullmatch(message.text.strip()):
+        await message.answer(
+            "Отправьте корректный Telegram-тег, например <code>@username</code>."
+        )
+        return
+    username = message.text.strip().lstrip("@")
+    if storage.get_user_by_username(username):
+        await message.answer("Пользователь с таким тегом уже зарегистрирован.")
+        return
+    await state.update_data(username=username)
+    await state.set_state(AdminAddUser.display_name)
+    await message.answer(
+        "Отправьте ник пользователя на MangaBuff.",
+        reply_markup=admin_add_user_keyboard(),
+    )
+
+
+@router.message(AdminAddUser.display_name)
+async def admin_add_user_display_name(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if message.chat.type != "private" or message.from_user.id not in config.admin_ids:
+        return
+    if not message.text:
+        return
+    display_name = message.text.strip()
+    if not 1 <= len(display_name) <= 100:
+        await message.answer("Ник должен содержать от 1 до 100 символов.")
+        return
+    await state.update_data(display_name=display_name)
+    await state.set_state(AdminAddUser.profile_url)
+    await message.answer(
+        "Отправьте ссылку на профиль MangaBuff.",
+        reply_markup=admin_add_user_keyboard(),
+    )
+
+
+@router.message(AdminAddUser.profile_url)
+async def admin_add_user_profile_url(
+    message: Message,
+    state: FSMContext,
+) -> None:
+    if message.chat.type != "private" or message.from_user.id not in config.admin_ids:
+        return
+    if not message.text:
+        return
+    parsed = parse_profile_url(message.text)
+    if not parsed:
+        await message.answer(
+            "Отправьте ссылку вида https://mangabuff.ru/users/854887"
+        )
+        return
+    profile_id, profile_url = parsed
+    data = await state.get_data()
+    username = data.get("username")
+    display_name = data.get("display_name")
+    if not username or not display_name:
+        await state.clear()
+        await message.answer("Добавление прервано. Начните заново в настройках.")
+        return
+
+    current = storage.get_prepared_user(str(username))
+    if storage.profile_exists(profile_id) or (
+        storage.pending_profile_exists(profile_id)
+        and (not current or current.profile_id != profile_id)
+    ):
+        await message.answer(
+            "Этот профиль MangaBuff уже зарегистрирован или указан в другой заявке."
+        )
+        return
+
+    created = storage.create_prepared_user(
+        username=str(username),
+        display_name=str(display_name),
+        profile_id=profile_id,
+        profile_url=profile_url,
+        created_by=message.from_user.id,
+    )
+    if not created:
+        await message.answer(
+            "Не удалось сохранить пользователя. Проверьте, не используется ли "
+            "этот профиль в другой записи."
+        )
+        return
+
+    await state.clear()
+    await message.answer(
+        f"Пользователь <b>@{html.escape(str(username))}</b> добавлен.\n"
+        "Когда он впервые нажмёт /start, профиль привяжется автоматически.",
+        reply_markup=settings_keyboard(),
+    )
+
+
 @router.message(Registration.profile_url)
 async def registration_profile_url(
     message: Message,
@@ -1448,9 +1683,9 @@ async def registration_profile_url(
         return
 
     profile_id, profile_url = parsed
-    if storage.profile_exists(profile_id):
+    if storage.profile_exists(profile_id) or storage.pending_profile_exists(profile_id):
         await message.answer(
-            "Этот профиль MangaBuff уже зарегистрирован в боте.\n"
+            "Этот профиль MangaBuff уже зарегистрирован или ожидает привязки.\n"
             "Отправьте ссылку на другой профиль."
         )
         return
@@ -1618,6 +1853,138 @@ async def reject_registration(call: CallbackQuery) -> None:
 async def on_menu(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await edit_or_send_menu(call)
+
+
+@router.callback_query(F.data == "settings")
+async def on_settings(call: CallbackQuery, state: FSMContext) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.clear()
+    await replace_with_text(
+        call.message,
+        "<b>Настройки</b>\n\nУправление регистрацией пользователей.",
+        reply_markup=settings_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "settings_requests")
+async def on_settings_requests(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    requests = storage.list_registration_requests()
+    text = (
+        f"<b>Активные заявки</b>\n\nВсего: {len(requests)}"
+        if requests
+        else "<b>Активные заявки</b>\n\nЗаявок сейчас нет."
+    )
+    await replace_with_text(
+        call.message,
+        text,
+        reply_markup=settings_requests_keyboard(requests),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("settings_request:"))
+async def on_settings_request(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    telegram_id = int(call.data.split(":", 1)[1])
+    request = storage.get_registration_request(telegram_id)
+    if not request:
+        await call.answer("Эта заявка уже обработана.", show_alert=True)
+        return
+    await replace_with_text(
+        call.message,
+        registration_request_text(request),
+        reply_markup=registration_request_keyboard(
+            request,
+            back_callback="settings_requests",
+        ),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "settings_add_user")
+async def on_settings_add_user(
+    call: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(AdminAddUser.username)
+    await replace_with_text(
+        call.message,
+        "Отправьте Telegram-тег пользователя, например <code>@username</code>.",
+        reply_markup=admin_add_user_keyboard(),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "settings_prepared")
+async def on_settings_prepared(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    users = storage.list_prepared_users()
+    text = (
+        f"<b>Ожидают первого /start</b>\n\nВсего: {len(users)}"
+        if users
+        else "<b>Ожидают первого /start</b>\n\nСписок пуст."
+    )
+    await replace_with_text(
+        call.message,
+        text,
+        reply_markup=settings_prepared_keyboard(users),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("settings_prepared_view:"))
+async def on_settings_prepared_view(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    username = call.data.split(":", 1)[1]
+    user = storage.get_prepared_user(username)
+    if not user:
+        await call.answer("Запись уже удалена или активирована.", show_alert=True)
+        return
+    await replace_with_text(
+        call.message,
+        prepared_user_text(user),
+        reply_markup=prepared_user_view_keyboard(user),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("settings_prepared_delete:"))
+async def on_settings_prepared_delete(call: CallbackQuery) -> None:
+    if call.from_user.id not in config.admin_ids:
+        await call.answer("Недостаточно прав.", show_alert=True)
+        return
+    username = call.data.split(":", 1)[1]
+    deleted = storage.delete_prepared_user(username)
+    users = storage.list_prepared_users()
+    await replace_with_text(
+        call.message,
+        (
+            "<b>Ожидают первого /start</b>\n\n"
+            + (f"Всего: {len(users)}" if users else "Список пуст.")
+        ),
+        reply_markup=settings_prepared_keyboard(users),
+    )
+    await call.answer(
+        "Предварительная запись удалена."
+        if deleted
+        else "Запись уже отсутствует."
+    )
 
 
 @router.callback_query(F.data == "giveaways")

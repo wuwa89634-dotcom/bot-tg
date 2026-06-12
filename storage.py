@@ -28,6 +28,16 @@ class RegistrationRequest:
 
 
 @dataclass(frozen=True)
+class PreparedUser:
+    username: str
+    display_name: str
+    profile_id: int
+    profile_url: str
+    created_by: int
+    created_at: str
+
+
+@dataclass(frozen=True)
 class Booking:
     id: int
     booking_date: str
@@ -108,6 +118,16 @@ class Storage:
                 display_name TEXT NOT NULL,
                 profile_id INTEGER NOT NULL UNIQUE,
                 profile_url TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS prepared_users (
+                username_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                profile_id INTEGER NOT NULL UNIQUE,
+                profile_url TEXT NOT NULL,
+                created_by INTEGER NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -195,6 +215,17 @@ class Storage:
             )
             """,
             """
+            CREATE TABLE IF NOT EXISTS prepared_users (
+                username_key TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                profile_id BIGINT NOT NULL UNIQUE,
+                profile_url TEXT NOT NULL,
+                created_by BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
             CREATE TABLE IF NOT EXISTS bookings (
                 id BIGSERIAL PRIMARY KEY,
                 booking_date TEXT NOT NULL,
@@ -273,10 +304,34 @@ class Storage:
         ).fetchone()
         return _user_from_row(row) if row else None
 
+    def get_user_by_username(self, username: str) -> ClubUser | None:
+        row = self.conn.execute(
+            f"""
+            SELECT * FROM users
+            WHERE LOWER(username) = {self.placeholder}
+            """,
+            (username.lstrip("@").lower(),),
+        ).fetchone()
+        return _user_from_row(row) if row else None
+
     def profile_exists(self, profile_id: int) -> bool:
         row = self.conn.execute(
             f"SELECT 1 FROM users WHERE profile_id = {self.placeholder}",
             (profile_id,),
+        ).fetchone()
+        return row is not None
+
+    def pending_profile_exists(self, profile_id: int) -> bool:
+        row = self.conn.execute(
+            f"""
+            SELECT 1 FROM registration_requests
+            WHERE profile_id = {self.placeholder}
+            UNION ALL
+            SELECT 1 FROM prepared_users
+            WHERE profile_id = {self.placeholder}
+            LIMIT 1
+            """,
+            (profile_id, profile_id),
         ).fetchone()
         return row is not None
 
@@ -393,6 +448,123 @@ class Storage:
         )
         self.conn.commit()
         return request
+
+    def create_prepared_user(
+        self,
+        username: str,
+        display_name: str,
+        profile_id: int,
+        profile_url: str,
+        created_by: int,
+    ) -> bool:
+        username = username.lstrip("@")
+        username_key = username.casefold()
+        try:
+            self.conn.execute(
+                f"""
+                INSERT INTO prepared_users (
+                    username_key, username, display_name, profile_id,
+                    profile_url, created_by
+                )
+                VALUES ({self._ph(6)})
+                ON CONFLICT(username_key) DO UPDATE SET
+                    username = excluded.username,
+                    display_name = excluded.display_name,
+                    profile_id = excluded.profile_id,
+                    profile_url = excluded.profile_url,
+                    created_by = excluded.created_by,
+                    created_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    username_key,
+                    username,
+                    display_name,
+                    profile_id,
+                    profile_url,
+                    created_by,
+                ),
+            )
+            self.conn.commit()
+            return True
+        except self.integrity_error:
+            self.conn.rollback()
+            return False
+
+    def get_prepared_user(self, username: str | None) -> PreparedUser | None:
+        if not username:
+            return None
+        row = self.conn.execute(
+            f"""
+            SELECT * FROM prepared_users
+            WHERE username_key = {self.placeholder}
+            """,
+            (username.lstrip("@").casefold(),),
+        ).fetchone()
+        return _prepared_user_from_row(row) if row else None
+
+    def list_prepared_users(self) -> list[PreparedUser]:
+        rows = self.conn.execute(
+            """
+            SELECT * FROM prepared_users
+            ORDER BY created_at, username_key
+            """
+        ).fetchall()
+        return [_prepared_user_from_row(row) for row in rows]
+
+    def delete_prepared_user(self, username: str) -> bool:
+        cursor = self.conn.execute(
+            f"""
+            DELETE FROM prepared_users
+            WHERE username_key = {self.placeholder}
+            """,
+            (username.lstrip("@").casefold(),),
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def claim_prepared_user(
+        self,
+        telegram_id: int,
+        username: str | None,
+    ) -> ClubUser | None:
+        prepared = self.get_prepared_user(username)
+        if not prepared or not username:
+            return None
+        try:
+            self.conn.execute(
+                f"""
+                INSERT INTO users (
+                    telegram_id, username, display_name, profile_id, profile_url
+                )
+                VALUES ({self._ph(5)})
+                """,
+                (
+                    telegram_id,
+                    username,
+                    prepared.display_name,
+                    prepared.profile_id,
+                    prepared.profile_url,
+                ),
+            )
+            self.conn.execute(
+                f"""
+                DELETE FROM prepared_users
+                WHERE username_key = {self.placeholder}
+                """,
+                (username.casefold(),),
+            )
+            self.conn.execute(
+                f"""
+                DELETE FROM registration_requests
+                WHERE telegram_id = {self.placeholder}
+                """,
+                (telegram_id,),
+            )
+            self.conn.commit()
+        except self.integrity_error:
+            self.conn.rollback()
+            return None
+        return self.get_user(telegram_id)
 
     def add_user(
         self,
@@ -783,6 +955,17 @@ def _registration_request_from_row(row: Any) -> RegistrationRequest:
         display_name=row["display_name"],
         profile_id=int(row["profile_id"]),
         profile_url=row["profile_url"],
+        created_at=str(row["created_at"]),
+    )
+
+
+def _prepared_user_from_row(row: Any) -> PreparedUser:
+    return PreparedUser(
+        username=row["username"],
+        display_name=row["display_name"],
+        profile_id=int(row["profile_id"]),
+        profile_url=row["profile_url"],
+        created_by=int(row["created_by"]),
         created_at=str(row["created_at"]),
     )
 
