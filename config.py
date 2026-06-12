@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -33,7 +34,26 @@ def _optional_int(value: str | None) -> int | None:
 def _int_set(value: str | None) -> set[int]:
     if not value:
         return set()
-    return {int(item.strip()) for item in value.split(",") if item.strip()}
+    items = [item for item in re.split(r"[\s,;]+", value.strip()) if item]
+    try:
+        return {int(item) for item in items}
+    except ValueError as error:
+        raise RuntimeError(
+            "ADMIN_IDS must contain only Telegram numeric IDs separated by "
+            "commas, spaces, semicolons, or new lines"
+        ) from error
+
+
+def _is_railway() -> bool:
+    return any(
+        os.getenv(name)
+        for name in (
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_ENVIRONMENT_ID",
+            "RAILWAY_ENVIRONMENT_NAME",
+        )
+    )
 
 
 def load_config() -> Config:
@@ -41,6 +61,12 @@ def load_config() -> Config:
     token = os.getenv("BOT_TOKEN")
     if not token:
         raise RuntimeError("Set BOT_TOKEN in .env")
+    database_url = (os.getenv("DATABASE_URL") or "").strip() or None
+    if _is_railway() and not database_url:
+        raise RuntimeError(
+            "DATABASE_URL is required on Railway. Connect PostgreSQL to the "
+            "bot service; refusing to use temporary SQLite storage."
+        )
 
     default_menu_text = (
         "[ Гений, миллиардер и просто красивый мужчина: @reeigans]\n\n"
@@ -58,7 +84,7 @@ def load_config() -> Config:
         chat_url=os.getenv("CHAT_URL") or None,
         timezone=ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow")),
         db_path=os.getenv("DB_PATH", "bot.db"),
-        database_url=os.getenv("DATABASE_URL") or None,
+        database_url=database_url,
         menu_text=menu_text,
         menu_photo_path=os.getenv("MENU_PHOTO_PATH") or str(Path("assets") / "menu.jpg"),
         guide_text=os.getenv(

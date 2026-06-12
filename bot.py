@@ -2090,6 +2090,11 @@ async def main() -> None:
         logging.warning(
             "ADMIN_IDS is empty: registration requests cannot be approved"
         )
+    else:
+        logging.info(
+            "Configured registration administrators: %s",
+            len(config.admin_ids),
+        )
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dispatcher = Dispatcher()
